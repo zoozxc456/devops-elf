@@ -1,0 +1,16 @@
+all:
+  vars:
+    ansible_user: deploy
+  children:
+    lookout_server:
+      hosts:
+        monitoring:
+          ansible_host: 192.0.2.10
+    lookout_agent:
+      hosts:
+        app-01:
+          ansible_host: 192.0.2.20
+          host_role: prod
+        app-02:
+          ansible_host: 192.0.2.21
+          host_role: staging

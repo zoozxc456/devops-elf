@@ -1,0 +1,396 @@
+{
+  "uid": "lookout-nginx",
+  "title": "Nginx 總覽",
+  "tags": [
+    "lookout",
+    "nginx"
+  ],
+  "timezone": "",
+  "schemaVersion": 39,
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "refresh": "1m",
+  "editable": false,
+  "id": null,
+  "templating": {
+    "list": [
+      {
+        "name": "env",
+        "label": "環境",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "loki"
+        },
+        "query": "label_values({service!=\"\"}, env)",
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": false,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": []
+      },
+      {
+        "name": "host",
+        "label": "主機",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "loki"
+        },
+        "query": "label_values({format=\"nginx\", env=~\"$env\"}, host)",
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": false,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": []
+      },
+      {
+        "name": "service",
+        "label": "服務",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "loki"
+        },
+        "query": "label_values({format=\"nginx\", env=~\"$env\", host=~\"$host\"}, service)",
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": false,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": []
+      },
+      {
+        "name": "vhost",
+        "label": "網域（regex）",
+        "type": "textbox",
+        "query": ".*",
+        "current": {
+          "text": ".*",
+          "value": ".*"
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "請求數（依狀態碼）",
+      "type": "timeseries",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "queryType": "range",
+          "expr": "sum by (class) (count_over_time({host=~\"$host\", service=~\"$service\", env=~\"$env\", format=\"nginx\"} | status!=\"\" | vhost=~\"$vhost\" | label_format class=\"{{ substr 0 1 .status }}xx\" [$__auto]))",
+          "legendFormat": "{{class}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "title": "5xx 比例",
+      "type": "timeseries",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "queryType": "range",
+          "expr": "sum(count_over_time({host=~\"$host\", service=~\"$service\", env=~\"$env\", format=\"nginx\"} | status!=\"\" | vhost=~\"$vhost\" | status=~\"5..\" [$__auto])) / sum(count_over_time({host=~\"$host\", service=~\"$service\", env=~\"$env\", format=\"nginx\"} | status!=\"\" | vhost=~\"$vhost\" [$__auto]))",
+          "legendFormat": "5xx"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "unit": "percentunit"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "title": "回應時間（秒，不含長連線）",
+      "type": "timeseries",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "queryType": "range",
+          "expr": "quantile_over_time(0.50, {host=~\"$host\", service=~\"$service\", env=~\"$env\", format=\"nginx\"} | status!=\"\" | vhost=~\"$vhost\" | json | uri!~\"/(websocket|longpolling).*\" | unwrap request_time | __error__=\"\" [$__auto]) by (env)",
+          "legendFormat": "p50"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "queryType": "range",
+          "expr": "quantile_over_time(0.95, {host=~\"$host\", service=~\"$service\", env=~\"$env\", format=\"nginx\"} | status!=\"\" | vhost=~\"$vhost\" | json | uri!~\"/(websocket|longpolling).*\" | unwrap request_time | __error__=\"\" [$__auto]) by (env)",
+          "legendFormat": "p95"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "queryType": "range",
+          "expr": "quantile_over_time(0.99, {host=~\"$host\", service=~\"$service\", env=~\"$env\", format=\"nginx\"} | status!=\"\" | vhost=~\"$vhost\" | json | uri!~\"/(websocket|longpolling).*\" | unwrap request_time | __error__=\"\" [$__auto]) by (env)",
+          "legendFormat": "p99"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "unit": "s"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "title": "請求數（依網域）",
+      "type": "timeseries",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "queryType": "range",
+          "expr": "sum by (vhost) (count_over_time({host=~\"$host\", service=~\"$service\", env=~\"$env\", format=\"nginx\"} | status!=\"\" | vhost=~\"$vhost\" [$__auto]))",
+          "legendFormat": "{{vhost}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 5,
+      "title": "最慢網址（平均秒數）",
+      "type": "bargauge",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "queryType": "instant",
+          "expr": "topk(15, avg by (uri) (avg_over_time({host=~\"$host\", service=~\"$service\", env=~\"$env\", format=\"nginx\"} | status!=\"\" | vhost=~\"$vhost\" | json | uri!~\"/(websocket|longpolling).*\" | unwrap request_time | __error__=\"\" [$__range])))",
+          "legendFormat": "{{uri}}"
+        }
+      ],
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 6,
+      "title": "5xx 網址排行",
+      "type": "bargauge",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "queryType": "instant",
+          "expr": "topk(15, sum by (uri) (count_over_time({host=~\"$host\", service=~\"$service\", env=~\"$env\", format=\"nginx\"} | status!=\"\" | vhost=~\"$vhost\" | status=~\"5..\" | json uri [$__range])))",
+          "legendFormat": "{{uri}}"
+        }
+      ],
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "id": 7,
+      "title": "5xx 請求",
+      "type": "logs",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 24,
+        "h": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "queryType": "range",
+          "expr": "{host=~\"$host\", service=~\"$service\", env=~\"$env\", format=\"nginx\"} | status!=\"\" | vhost=~\"$vhost\" | status=~\"5..\" | json | line_format \"{{.status}}  {{.method}} {{.vhost}}{{.uri}}  {{.request_time}}s  upstream={{.upstream_status}}\""
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending"
+      }
+    },
+    {
+      "id": 8,
+      "title": "Nginx error log",
+      "type": "logs",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 34,
+        "w": 24,
+        "h": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "queryType": "range",
+          "expr": "{host=~\"$host\", service=~\"$service\", env=~\"$env\", format=\"nginx\", level=~\"ERROR|CRITICAL|WARN\"}"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending"
+      }
+    }
+  ]
+}

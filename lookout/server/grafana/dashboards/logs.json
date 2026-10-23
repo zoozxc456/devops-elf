@@ -1,0 +1,184 @@
+{
+  "uid": "lookout-logs",
+  "title": "應用程式 log 總覽",
+  "tags": [
+    "lookout",
+    "logs"
+  ],
+  "schemaVersion": 39,
+  "editable": false,
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "refresh": "1m",
+  "templating": {
+    "list": [
+      {
+        "name": "env",
+        "label": "環境",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "loki"
+        },
+        "query": "label_values({service!=\"\"}, env)",
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": false,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": []
+      },
+      {
+        "name": "host",
+        "label": "主機",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "loki"
+        },
+        "query": "label_values({env=~\"$env\"}, host)",
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": false,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": []
+      },
+      {
+        "name": "service",
+        "label": "服務",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "loki"
+        },
+        "query": "label_values({env=~\"$env\", host=~\"$host\"}, service)",
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": false,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": []
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Log 量（依服務與等級）",
+      "type": "timeseries",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (service, level) (count_over_time({env=~\"$env\", host=~\"$host\", service=~\"$service\"} [$__auto]))",
+          "queryType": "range",
+          "legendFormat": "{{host}} {{service}} {{level}}"
+        }
+      ],
+      "options": {}
+    },
+    {
+      "id": 2,
+      "title": "錯誤數排行",
+      "type": "barchart",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "topk(15, sum by (host, service) (count_over_time({env=~\"$env\", host=~\"$host\", service=~\"$service\", level=~\"ERROR|CRITICAL\"} [$__range])))",
+          "queryType": "range",
+          "legendFormat": "{{host}} {{service}} {{level}}"
+        }
+      ],
+      "options": {}
+    },
+    {
+      "id": 3,
+      "title": "ERROR / CRITICAL",
+      "type": "logs",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 24,
+        "h": 12
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{env=~\"$env\", host=~\"$host\", service=~\"$service\", level=~\"ERROR|CRITICAL\"}",
+          "queryType": "range",
+          "legendFormat": "{{host}} {{service}} {{level}}"
+        }
+      ],
+      "options": {
+        "showLabels": true,
+        "wrapLogMessage": true
+      }
+    },
+    {
+      "id": 4,
+      "title": "所有 log",
+      "type": "logs",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 24,
+        "h": 12
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{env=~\"$env\", host=~\"$host\", service=~\"$service\"}",
+          "queryType": "range",
+          "legendFormat": "{{host}} {{service}} {{level}}"
+        }
+      ],
+      "options": {
+        "showLabels": true,
+        "wrapLogMessage": true
+      }
+    }
+  ],
+  "timezone": ""
+}

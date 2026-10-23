@@ -1,0 +1,6 @@
+- name: Recreate alloy
+  community.docker.docker_compose_v2:
+    project_src: '{{ lookout_root }}/agent'
+    services:
+      - alloy
+    recreate: always

@@ -1,0 +1,18 @@
+# 在控制端產生該主機的完整插件清單，不需要遠端 Python 以外的額外工具。
+- name: 建立插件暫存目錄
+  ansible.builtin.tempfile:
+    state: directory
+    prefix: lookout-plugins-
+  delegate_to: localhost
+  become: false
+  check_mode: false
+  changed_when: false
+  register: lookout_plugin_build
+
+- name: 組合核心與插件
+  ansible.builtin.command:
+    argv: "{{ ['python3', playbook_dir ~ '/../scripts/plugins.py', 'apply', '--output', lookout_plugin_build.path] + lookout_plugins }}"
+  delegate_to: localhost
+  become: false
+  check_mode: false
+  changed_when: false

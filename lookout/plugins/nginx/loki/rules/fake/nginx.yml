@@ -1,0 +1,37 @@
+groups:
+  - name: nginx-prod
+    interval: 1m
+    rules:
+      # 請求數下限避免流量低時少數錯誤就衝到高比例；門檻上線觀察一週後調整
+      - alert: NginxHigh5xxRate
+        expr: |
+          (
+            sum by (host, env, service) (count_over_time({env="prod", format="nginx"} | status=~"5.." [5m]))
+            /
+            sum by (host, env, service) (count_over_time({env="prod", format="nginx"} | status!="" [5m]))
+          ) > 0.05
+          and
+          sum by (host, env, service) (count_over_time({env="prod", format="nginx"} | status!="" [5m])) > 20
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.host }} / {{ $labels.service }} 5xx 比例 {{ $value | humanizePercentage }}"
+
+      # /websocket、/longpolling 本來就是長連線，不算
+      - alert: NginxSlowResponses
+        expr: |
+          quantile_over_time(0.95,
+            {env="prod", format="nginx"}
+              | status!=""
+              | json
+              | uri!~"/(websocket|longpolling).*"
+              | unwrap request_time
+              | __error__=""
+            [5m]
+          ) by (host, env, service) > 5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.host }} / {{ $labels.service }} p95 回應時間 {{ $value | printf \"%.1f\" }} 秒"

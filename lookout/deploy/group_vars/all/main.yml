@@ -1,0 +1,14 @@
+lookout_root: /opt/lookout
+lookout_server_ip: 192.0.2.10
+app_network: app
+lookout_envs: '{{ host_role | default(''prod'') }}'
+lookout_containers: ''
+grafana_bind_addr: 127.0.0.1
+grafana_root_url: http://localhost:3000
+grafana_timezone: browser
+lookout_agent_targets: ''
+lookout_agent_env: {}
+lookout_alertmanager_config: '{{ playbook_dir }}/../server/alertmanager/alertmanager.yml'
+
+# 每台主機的完整插件清單（可在 host_vars 覆寫）。
+lookout_plugins: []

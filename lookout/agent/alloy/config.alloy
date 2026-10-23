@@ -1,0 +1,340 @@
+// Lookout agent：跑在每台 Docker 主機上，收 log 和 metrics，推到監控主機。
+// 所有可調整的值都從 .env 讀（見 .env.example）；要收哪些容器由容器自己的 label 決定（見 docs/labels.md）。
+
+// ============================================================================
+// 上線閘門：只放行 LOOKOUT_ENVS 列出的環境（例如 "dev"、"dev|test"、"prod"）
+// ============================================================================
+
+// 所有 metrics 最後都經過這裡。沒有 env label 的（主機、Alloy 自身、沒納管的容器）一律放行。
+prometheus.relabel "gate" {
+  forward_to = [prometheus.remote_write.default.receiver]
+
+  rule {
+    source_labels = ["env"]
+    regex         = "(" + sys.env("LOOKOUT_ENVS") + ")?"
+    action        = "keep"
+  }
+}
+
+// ============================================================================
+// 推送目的地
+// ============================================================================
+
+loki.write "default" {
+  endpoint {
+    url = sys.env("LOKI_PUSH_URL")
+  }
+  external_labels = { host = sys.env("HOST_NAME") }
+}
+
+prometheus.remote_write "default" {
+  endpoint {
+    url = sys.env("PROMETHEUS_REMOTE_WRITE_URL")
+  }
+  // role 區分 prod 主機與其他主機，主機與 agent 的告警規則只看 role="prod"
+  external_labels = { host = sys.env("HOST_NAME"), role = sys.env("HOST_ROLE") }
+}
+
+// ============================================================================
+// Log：從 Docker API 讀容器輸出
+//   納管條件：容器有 lookout.enable=true label，或名稱符合 LOOKOUT_CONTAINERS
+//   lookout.env      → env（沒有就用 HOST_ROLE）
+//   lookout.service  → service（沒有就用 compose service 名稱，再沒有就用容器名稱）
+//   lookout.format   → 解析方式：postgres | json | logfmt | raw（預設），其他格式由插件提供
+// ============================================================================
+
+discovery.docker "containers" {
+  host = "unix:///var/run/docker.sock"
+}
+
+// 一定要在這一層過濾：寫在 loki.source.docker 的 relabel_rules 裡的 keep 不會丟掉容器，
+// 不符合的容器仍會以只剩 host label 的形式被送出
+discovery.relabel "logs" {
+  targets = discovery.docker.containers.targets
+
+  // LOOKOUT_CONTAINERS 留空時右半邊只會比對到名稱 "/"，等於不啟用
+  rule {
+    source_labels = ["__meta_docker_container_label_lookout_enable", "__meta_docker_container_name"]
+    separator     = ";"
+    regex         = "true;.*|.*;/(" + sys.env("LOOKOUT_CONTAINERS") + ")"
+    action        = "keep"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+
+  rule {
+    target_label = "env"
+    replacement  = sys.env("HOST_ROLE")
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_lookout_env"]
+    regex         = "(.+)"
+    target_label  = "env"
+  }
+
+  // 後面的規則有值時覆蓋前面的
+  rule {
+    source_labels = ["container"]
+    target_label  = "service"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    regex         = "(.+)"
+    target_label  = "service"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_lookout_service"]
+    regex         = "(.+)"
+    target_label  = "service"
+  }
+
+  rule {
+    target_label = "format"
+    replacement  = "raw"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_lookout_format"]
+    regex         = "(.+)"
+    target_label  = "format"
+  }
+
+  rule {
+    source_labels = ["env"]
+    regex         = "(" + sys.env("LOOKOUT_ENVS") + ")"
+    action        = "keep"
+  }
+}
+
+loki.source.docker "containers" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.relabel.logs.output
+  forward_to = [loki.process.containers.receiver]
+}
+
+// Log pipeline 由 scripts/plugins.py 產生至 agent/generated/log-pipeline.alloy。
+
+// ============================================================================
+// Metrics：主機
+// ============================================================================
+
+prometheus.exporter.unix "host" {
+  procfs_path = "/host/proc"
+  sysfs_path  = "/host/sys"
+  rootfs_path = "/rootfs"
+
+  filesystem {
+    mount_points_exclude = "^/(dev|proc|run|sys|var/lib/docker/.+)($|/)"
+    fs_types_exclude     = "^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tmpfs|tracefs)$"
+  }
+}
+
+discovery.relabel "host" {
+  targets = prometheus.exporter.unix.host.targets
+
+  rule {
+    target_label = "job"
+    replacement  = "node"
+  }
+
+  rule {
+    target_label = "instance"
+    replacement  = sys.env("HOST_NAME")
+  }
+}
+
+prometheus.scrape "host" {
+  targets         = discovery.relabel.host.output
+  scrape_interval = "30s"
+  forward_to      = [prometheus.relabel.gate.receiver]
+}
+
+// ============================================================================
+// Metrics：容器（cAdvisor）。所有容器都收；納管的容器（與 log 同樣的條件）會多 env、service label
+// ============================================================================
+
+prometheus.exporter.cadvisor "containers" {
+  docker_host      = "unix:///var/run/docker.sock"
+  docker_only      = true
+  storage_duration = "5m"
+  // 只帶 lookout 需要的容器 label，避免每個 label 都變成 metrics 的維度
+  store_container_labels       = false
+  allowlisted_container_labels = ["lookout.enable", "lookout.env", "lookout.service", "com.docker.compose.service"]
+}
+
+discovery.relabel "containers" {
+  targets = prometheus.exporter.cadvisor.containers.targets
+
+  rule {
+    target_label = "job"
+    replacement  = "cadvisor"
+  }
+
+  rule {
+    target_label = "instance"
+    replacement  = sys.env("HOST_NAME")
+  }
+}
+
+prometheus.scrape "containers" {
+  targets         = discovery.relabel.containers.output
+  scrape_interval = "30s"
+  forward_to      = [prometheus.relabel.containers.receiver]
+}
+
+// 依容器 label 補上 env、service，讓告警與儀表板能和 log 用同一組 label 篩
+prometheus.relabel "containers" {
+  forward_to = [prometheus.relabel.gate.receiver]
+
+  rule {
+    source_labels = ["name", "container_label_lookout_enable", "name"]
+    separator     = ";"
+    regex         = ".+;true;.*|.+;.*;(" + sys.env("LOOKOUT_CONTAINERS") + ")"
+    target_label  = "env"
+    replacement   = sys.env("HOST_ROLE")
+  }
+
+  rule {
+    source_labels = ["container_label_lookout_env"]
+    regex         = "(.+)"
+    target_label  = "env"
+  }
+
+  rule {
+    source_labels = ["container_label_com_docker_compose_service"]
+    regex         = "(.+)"
+    target_label  = "service"
+  }
+
+  rule {
+    source_labels = ["container_label_lookout_service"]
+    regex         = "(.+)"
+    target_label  = "service"
+  }
+
+  rule {
+    regex  = "container_label_.+"
+    action = "labeldrop"
+  }
+}
+
+// ============================================================================
+// Metrics：應用程式自己的 /metrics（容器有 lookout.metrics.port label 就抓）
+//   lookout.metrics.port  → 埠號（必填）
+//   lookout.metrics.path  → 路徑（預設 /metrics）
+// ============================================================================
+
+// 不用 match_first_network：容器接了多個網路時，只取跟 Alloy 共用的 APP_NETWORK
+discovery.docker "apps" {
+  host                = "unix:///var/run/docker.sock"
+  match_first_network = false
+}
+
+discovery.relabel "apps" {
+  targets = discovery.docker.apps.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_label_lookout_metrics_port"]
+    regex         = "\\d+"
+    action        = "keep"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_network_name"]
+    regex         = sys.env("APP_NETWORK")
+    action        = "keep"
+  }
+
+  // 每個對外 port 會各產生一個 target，改寫成同一個位址後會合併成一個
+  rule {
+    source_labels = ["__meta_docker_network_ip", "__meta_docker_container_label_lookout_metrics_port"]
+    separator     = ":"
+    target_label  = "__address__"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_lookout_metrics_path"]
+    regex         = "(.+)"
+    target_label  = "__metrics_path__"
+  }
+
+  rule {
+    target_label = "job"
+    replacement  = "app"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "instance"
+  }
+
+  rule {
+    source_labels = ["instance"]
+    target_label  = "service"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    regex         = "(.+)"
+    target_label  = "service"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_lookout_service"]
+    regex         = "(.+)"
+    target_label  = "service"
+  }
+
+  rule {
+    target_label = "env"
+    replacement  = sys.env("HOST_ROLE")
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_lookout_env"]
+    regex         = "(.+)"
+    target_label  = "env"
+  }
+}
+
+prometheus.scrape "apps" {
+  targets         = discovery.relabel.apps.output
+  scrape_interval = "30s"
+  forward_to      = [prometheus.relabel.gate.receiver]
+}
+
+// ============================================================================
+// Metrics：Alloy 自身（監控主機用 up{job="alloy"} 判斷 agent 是否斷線）
+// ============================================================================
+
+prometheus.exporter.self "alloy" {}
+
+discovery.relabel "alloy" {
+  targets = prometheus.exporter.self.alloy.targets
+
+  rule {
+    target_label = "job"
+    replacement  = "alloy"
+  }
+
+  rule {
+    target_label = "instance"
+    replacement  = sys.env("HOST_NAME")
+  }
+}
+
+prometheus.scrape "alloy" {
+  targets         = discovery.relabel.alloy.output
+  scrape_interval = "30s"
+  forward_to      = [prometheus.relabel.gate.receiver]
+}
+
+// 資料庫等 exporter 的元件定義在 modules.alloy，各主機的實例寫在 targets.alloy

@@ -1,0 +1,13 @@
+# 複製成 vault.yml 後填入並 ansible-vault encrypt group_vars/all/vault.yml。
+vault_grafana_admin_password: CHANGE_ME
+
+# 可選：與 Alertmanager 設定內 *_file 對應。一個 key 對應一個 secrets/ 檔案。
+vault_alertmanager_secrets: {}
+# vault_alertmanager_secrets:
+#   discord_webhook_url: https://discord.com/api/webhooks/REPLACE/REPLACE
+
+# 可選：各主機的 exporter 連線資訊。只填實際啟用的 target。
+vault_lookout_agent_env: {}
+# vault_lookout_agent_env:
+#   app-01:
+#     PG_DSN_MAIN: postgresql://monitoring:URL_ENCODED_PASSWORD@postgres:5432/postgres?sslmode=disable

@@ -1,0 +1,26 @@
+grafana_admin_user: admin
+lookout_data_dir: '{{ lookout_root }}/server/data'
+lookout_data_owners:
+  - dir: prometheus
+    owner: '65534'
+    group: '65534'
+  - dir: alertmanager
+    owner: '65534'
+    group: '65534'
+  - dir: loki
+    owner: '10001'
+    group: '10001'
+  - dir: grafana
+    owner: '472'
+    group: '0'
+grafana_bind_addr: 127.0.0.1
+grafana_root_url: http://localhost:3000
+grafana_timezone: browser
+prometheus_retention: 30d
+loki_retention: 720h
+loki_retention_nonprod: 168h
+vault_alertmanager_secrets: {}
+lookout_alertmanager_config: '{{ playbook_dir }}/../server/alertmanager/alertmanager.yml'
+
+# 完整啟用清單，可在 host_vars 覆寫。
+lookout_plugins: []

@@ -1,0 +1,130 @@
+# 通用規則；預設只對 prod 告警。消失偵測以過去 24h 曾出現的 series 為基準。
+groups:
+  - name: lookout-host
+    rules:
+      - alert: HostDiskAlmostFull
+        expr: |
+          1 - node_filesystem_avail_bytes{job="node", role="prod", fstype!~"tmpfs|overlay"}
+            / node_filesystem_size_bytes{job="node", role="prod", fstype!~"tmpfs|overlay"}
+          > 0.85
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ $labels.instance }} {{ $labels.mountpoint }} 使用率 {{ $value | humanizePercentage }}'
+      - alert: HostDiskFillingUp
+        expr: |
+          predict_linear(node_filesystem_avail_bytes{job="node", role="prod", fstype!~"tmpfs|overlay"}[6h], 24 * 3600) < 0
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ $labels.instance }} {{ $labels.mountpoint }} 照目前速度 24 小時內會滿'
+      - alert: HostCpuHigh
+        expr: |
+          1 - avg by (host, instance) (rate(node_cpu_seconds_total{job="node", role="prod", mode="idle"}[5m])) > 0.7
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ $labels.instance }} CPU 使用率 {{ $value | humanizePercentage }}'
+      - alert: HostMemoryHigh
+        expr: |
+          1 - node_memory_MemAvailable_bytes{job="node", role="prod"} / node_memory_MemTotal_bytes{job="node", role="prod"} > 0.7
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ $labels.instance }} 記憶體使用率 {{ $value | humanizePercentage }}'
+  - name: lookout-services
+    rules:
+      - alert: ContainerDown
+        expr: |
+          max by (host, env, service, name) (max_over_time(container_last_seen{env="prod", service!="", name!=""}[24h])) < time() - 120
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: '{{ $labels.host }} / {{ $labels.name }} 容器已停止回報'
+      - alert: ContainerRestarting
+        expr: |
+          changes(container_start_time_seconds{env="prod", service!="", name!=""}[10m]) > 2
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ $labels.host }} / {{ $labels.name }} 10 分鐘內重啟 {{ $value }} 次'
+      - alert: AppTargetDown
+        expr: |
+          (up{env="prod", job=~"app|postgres|mysql|redis"} == 0) or (present_over_time(up{env="prod", job=~"app|postgres|mysql|redis"}[24h]) unless up{env="prod", job=~"app|postgres|mysql|redis"})
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: '{{ $labels.host }} / {{ $labels.instance }} exporter 抓取失敗或 target 消失'
+      - alert: PostgresDown
+        expr: |
+          pg_up{env="prod"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: '{{ $labels.instance }} 連不上'
+      - alert: PostgresConnectionsHigh
+        expr: |
+          sum by (host, env, instance) (pg_stat_activity_count{env="prod"})
+            / max by (host, env, instance) (pg_settings_max_connections{env="prod"})
+          > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ $labels.instance }} 連線數已達 max_connections 的 {{ $value | humanizePercentage }}'
+      - alert: MysqlDown
+        expr: |
+          mysql_up{env="prod"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: '{{ $labels.host }} / {{ $labels.instance }} MySQL 連不上'
+      - alert: RedisDown
+        expr: |
+          redis_up{env="prod"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: '{{ $labels.host }} / {{ $labels.instance }} Redis 連不上'
+  - name: lookout-self
+    rules:
+      - alert: LookoutAgentDown
+        expr: |
+          present_over_time(up{job="alloy", role="prod"}[24h]) unless (up{job="alloy", role="prod"} == 1)
+        for: 5m
+        labels:
+          severity: critical
+          env: prod
+        annotations:
+          summary: '{{ $labels.host }} 的 Alloy 已斷線 5 分鐘'
+      - alert: AlertmanagerNotificationsFailing
+        expr: |
+          increase(alertmanager_notifications_failed_total[10m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: Alertmanager 的 {{ $labels.integration }} 通知失敗
+      - alert: LookoutLogPushFailing
+        expr: |
+          increase(loki_write_dropped_entries_total{job="alloy", role="prod"}[10m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ $labels.host }} 推送 log 失敗，有 log 被丟棄'
+      - alert: MonitoringComponentDown
+        expr: |
+          up{job=~"loki|grafana|alertmanager|prometheus"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: 監控元件 {{ $labels.job }} 無法抓取 metrics

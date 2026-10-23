@@ -1,0 +1,41 @@
+# 複製到 ${XDG_CONFIG_HOME:-~/.config}/iap/hosts.yaml 後修改
+# 也可直接執行 iap setup 互動建立設定
+#
+# 欄位：
+#   type         ssh（預設）| tunnel
+#   project      不寫就用 defaults.project，再沒有就用 gcloud config
+#   zone         不寫就用 defaults.zone，再沒有就用 gcloud config
+#   instance     不寫就用 key 名稱
+#   remote_port  tunnel 必填
+#   local_port   不寫就同 remote_port
+#   endpoints    啟動連線時列出的入口，連線建立後可用；map（標籤: 值）或 list
+#                {port} → 本機 port，{rport} → 遠端 port
+#                密碼不要寫這裡，DB 用 ~/.pgpass 之類
+
+defaults:
+  project: my-project
+  zone: us-central1-a
+
+hosts:
+  app-vm: {}                       # ssh app-vm
+
+  app-web:
+    type: tunnel
+    instance: app-vm
+    remote_port: 8080
+    local_port: 18080
+    endpoints:
+      前台: http://localhost:{port}/
+      健康檢查: http://localhost:{port}/health
+
+  app-pg:
+    type: tunnel
+    instance: app-vm
+    remote_port: 5432
+    local_port: 15432
+    endpoints:
+      - postgresql://app@localhost:{port}/app
+
+  other-project-vm:
+    project: another-project
+    zone: us-central1-b

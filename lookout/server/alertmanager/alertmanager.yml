@@ -1,0 +1,64 @@
+# 預設不發送通知；取消下方所需管道的註解即可啟用，可同時開啟多種。
+# webhook / token 放 server/secrets/<檔名>，權限 65534:65534 / 0400。
+route:
+  receiver: default
+  group_by: [alertname, host, env, service, instance]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+receivers:
+  - name: default
+    # discord_configs:
+    #   - webhook_url_file: /etc/alertmanager/secrets/discord_webhook_url
+    #     send_resolved: true
+    #     # 預設訊息會附上每筆告警的完整 label 與 Prometheus 連結（容器內網址，外部打不開），
+    #     # 改成只顯示狀態、告警名稱、環境與 summary
+    #     title: '{{ .Status | toUpper }}: {{ .CommonLabels.alertname }}'
+    #     message: '{{ range .Alerts }}{{ .Annotations.summary }}{{ "\n" }}{{ end }}'
+
+    # slack_configs:
+    #   - api_url_file: /etc/alertmanager/secrets/slack_webhook_url
+    #     channel: "#alerts"
+    #     send_resolved: true
+    #     title: '{{ .Status | toUpper }}: {{ .CommonLabels.alertname }}'
+    #     text: '{{ range .Alerts }}{{ .Annotations.summary }}{{ "\n" }}{{ end }}'
+
+    # telegram_configs:
+    #   - bot_token_file: /etc/alertmanager/secrets/telegram_bot_token
+    #     chat_id: -1001234567890
+    #     send_resolved: true
+    #     parse_mode: ""
+    #     message: '{{ .Status | toUpper }}: {{ .CommonLabels.alertname }}{{ "\n" }}{{ range .Alerts }}{{ .Annotations.summary }}{{ "\n" }}{{ end }}'
+
+    # msteamsv2_configs:
+    #   - webhook_url_file: /etc/alertmanager/secrets/msteams_webhook_url
+    #     send_resolved: true
+    #     title: '{{ .Status | toUpper }}: {{ .CommonLabels.alertname }}'
+    #     text: '{{ range .Alerts }}{{ .Annotations.summary }}{{ "\n" }}{{ end }}'
+
+    # email_configs:
+    #   - to: ops@example.com
+    #     from: alertmanager@example.com
+    #     smarthost: smtp.example.com:587
+    #     auth_username: alertmanager@example.com
+    #     auth_password_file: /etc/alertmanager/secrets/smtp_password
+    #     send_resolved: true
+    #     headers:
+    #       Subject: '{{ .Status | toUpper }}: {{ .CommonLabels.alertname }}'
+    #     text: '{{ range .Alerts }}{{ .Annotations.summary }}{{ "\n" }}{{ end }}'
+
+    # 自己的服務（例如 n8n、LINE 轉發）：收到的是 Alertmanager 標準 JSON
+    # webhook_configs:
+    #   - url_file: /etc/alertmanager/secrets/webhook_url
+    #     send_resolved: true
+
+templates:
+  - /etc/alertmanager/*.tmpl
+
+inhibit_rules:
+  # 某台 prod 主機的 agent 斷線時，「容器不見」「log 不見」都是同一件事的連帶結果，不重複通知。
+  # equal: host 讓 inhibit 只作用在同一台主機，不會誤壓其他主機的告警
+  - source_matchers: [alertname="LookoutAgentDown"]
+    target_matchers: [alertname=~"ContainerDown|LogsMissing|AppTargetDown"]
+    equal: [host]

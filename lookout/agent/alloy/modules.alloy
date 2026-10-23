@@ -1,0 +1,117 @@
+// 可重複使用的 exporter 元件。這裡只有定義，不會連任何東西；
+// 實際要監控的資料庫寫在 targets.alloy（從 targets.alloy.example 複製）。
+//
+// 每個元件的參數都一樣：
+//   env        → env label，告警規則看 env="prod"
+//   instance   → instance label，儀表板用它選資料庫
+//   dsn        → 連線字串，用 sys.env("...") 從 .env 讀，不要寫死在檔案裡
+//   forward_to → 固定填 [prometheus.relabel.gate.receiver]
+
+declare "lookout_postgres" {
+  argument "env" {}
+  argument "instance" {}
+  argument "dsn" {}
+  argument "forward_to" {}
+
+  prometheus.exporter.postgres "pg" {
+    data_source_names = [argument.dsn.value]
+  }
+
+  discovery.relabel "pg" {
+    targets = prometheus.exporter.postgres.pg.targets
+
+    rule {
+      target_label = "job"
+      replacement  = "postgres"
+    }
+
+    rule {
+      target_label = "instance"
+      replacement  = argument.instance.value
+    }
+
+    rule {
+      target_label = "env"
+      replacement  = argument.env.value
+    }
+  }
+
+  prometheus.scrape "pg" {
+    targets         = discovery.relabel.pg.output
+    scrape_interval = "30s"
+    forward_to      = argument.forward_to.value
+  }
+}
+
+declare "lookout_mysql" {
+  argument "env" {}
+  argument "instance" {}
+  argument "dsn" {}
+  argument "forward_to" {}
+
+  prometheus.exporter.mysql "mysql" {
+    data_source_name = argument.dsn.value
+  }
+
+  discovery.relabel "mysql" {
+    targets = prometheus.exporter.mysql.mysql.targets
+
+    rule {
+      target_label = "job"
+      replacement  = "mysql"
+    }
+
+    rule {
+      target_label = "instance"
+      replacement  = argument.instance.value
+    }
+
+    rule {
+      target_label = "env"
+      replacement  = argument.env.value
+    }
+  }
+
+  prometheus.scrape "mysql" {
+    targets         = discovery.relabel.mysql.output
+    scrape_interval = "30s"
+    forward_to      = argument.forward_to.value
+  }
+}
+
+declare "lookout_redis" {
+  argument "env" {}
+  argument "instance" {}
+  // redis://[:password@]host:6379
+  argument "dsn" {}
+  argument "forward_to" {}
+
+  prometheus.exporter.redis "redis" {
+    redis_addr = argument.dsn.value
+  }
+
+  discovery.relabel "redis" {
+    targets = prometheus.exporter.redis.redis.targets
+
+    rule {
+      target_label = "job"
+      replacement  = "redis"
+    }
+
+    rule {
+      target_label = "instance"
+      replacement  = argument.instance.value
+    }
+
+    rule {
+      target_label = "env"
+      replacement  = argument.env.value
+    }
+  }
+
+  prometheus.scrape "redis" {
+    targets         = discovery.relabel.redis.output
+    scrape_interval = "30s"
+    forward_to      = argument.forward_to.value
+  }
+}

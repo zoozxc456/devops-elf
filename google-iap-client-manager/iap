@@ -1,0 +1,451 @@
+#!/usr/bin/env bash
+# iap — gcloud IAP 連線選單（SSH / port tunnel）
+#
+#   iap                 互動選單（有 fzf 就用 fzf，沒有就用數字選單）
+#   iap help            顯示使用說明（同 --help / -h）
+#   iap export [FILE]   匯出目前設定；不指定檔案則輸出原始內容
+#   iap <name> [-- ssh 參數]   直接連線，例：iap app-vm -- -L 5432:localhost:5432
+#   iap setup           互動建立設定（可用 --config PATH 指定輸出）
+#   iap new             新增一組連線，保留既有設定並備份
+#   iap edit <name>     編輯指定連線，保留其他連線
+#   iap remove <name>   確認後移除指定連線
+#   iap reset           確認後清空目前設定的連線，保留 defaults
+#   iap uninstall       確認後移除本版本的安裝，保留連線設定
+#   iap show <name>     只列出這台的入口，不連線
+#   iap ls              列出所有主機
+#   iap edit            編輯設定檔
+#   iap import          從 shell history 撈出 gcloud ssh / start-iap-tunnel 指令，轉成設定行
+#   iap to-yaml         把目前設定轉成 YAML 印出來（搬家用）
+#   iap version         顯示版本
+#   iap update          更新安裝來源，並自動複製新版到目前的 bin
+#
+# 設定檔（依序找第一個存在的，可用環境變數 IAP_CONF 指定）：
+#   ${XDG_CONFIG_HOME:-~/.config}/iap/hosts.yaml  hosts.yml  hosts.json  hosts（純文字）
+#   YAML 需要 yq（mikefarah 版）或 python3 + PyYAML；JSON / YAML 都需要 jq
+set -euo pipefail
+
+VERSION="0.4.1"
+
+CONF_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/iap"
+if [[ -n "${IAP_CONF:-}" ]]; then
+  CONF="$IAP_CONF"
+else
+  CONF="$CONF_DIR/hosts"
+  for f in hosts.yaml hosts.yml hosts.json; do
+    [[ -f "$CONF_DIR/$f" ]] && { CONF="$CONF_DIR/$f"; break; }
+  done
+fi
+CONF_TEXT=""   # 統一轉成純文字格式後的內容
+
+die() { echo "iap: $*" >&2; exit 1; }
+
+ensure_conf() {
+  [[ -f "$CONF" ]] && return
+  case "$CONF" in
+    *.yaml|*.yml|*.json) die "找不到設定檔：${CONF}，請先執行 iap setup" ;;
+  esac
+  umask 077
+  mkdir -p "$(dirname "$CONF")"
+  cat >"$CONF" <<'EOF'
+# 每行一台，欄位用空白分隔：
+# name            type    project        zone            instance              [remote_port] [local_port]
+#
+# type:
+#   ssh     -> gcloud compute ssh --tunnel-through-iap
+#   tunnel  -> gcloud compute start-iap-tunnel（remote_port 必填，local_port 預設同 remote_port）
+# project / zone 填 "-" 代表用 gcloud config 的預設值
+#
+# 入口：主機下面用 ">" 開頭的行，啟動連線時列出，連線建立後可用
+#   > [標籤]  網址或連線字串
+#   {port} 會換成本機 port，{rport} 換成遠端 port
+#   密碼建議不要寫在這裡（DB 用 ~/.pgpass 之類）
+#
+# 範例：
+# app-web         tunnel  my-project     us-central1-a   app-vm                8080   18080
+#   > 前台        http://localhost:{port}/
+# app-db          tunnel  my-project     us-central1-a   app-vm                5432   15432
+#   > psql        postgresql://app@localhost:{port}/app
+# app-vm          ssh     my-project     us-central1-a   app-vm
+EOF
+  echo "已建立設定檔：${CONF}，請先填入主機（iap setup、iap edit 或 iap import）" >&2
+}
+
+# JSON → 內部純文字格式
+JQ_NORMALIZE='
+  (.defaults // {}) as $d
+  | (.hosts // {}) | to_entries[]
+  | .key as $n | .value as $h
+  | "\($n) \($h.type // "ssh") \($h.project // $d.project // "-") \($h.zone // $d.zone // "-") \($h.instance // $n) \($h.remote_port // "") \($h.local_port // "")",
+    ( $h.endpoints // []
+      | if type == "object" then to_entries[] | "  > \(.key)  \(.value)"
+        else .[] | "  > \(.)" end )'
+
+yaml_to_json() {
+  if command -v yq >/dev/null 2>&1 && yq -o=json '.' "$1" 2>/dev/null; then return; fi
+  command -v python3 >/dev/null 2>&1 \
+    && python3 -c 'import sys,json,yaml; json.dump(yaml.safe_load(open(sys.argv[1])) or {}, sys.stdout, ensure_ascii=False)' "$1" 2>/dev/null \
+    && return
+  die "讀 YAML 需要 yq（mikefarah 版）或 python3 + PyYAML"
+}
+
+load_conf() {
+  case "$CONF" in
+    *.json)
+      command -v jq >/dev/null 2>&1 || die "讀 JSON 需要 jq"
+      CONF_TEXT=$(jq -r "$JQ_NORMALIZE" "$CONF") || die "JSON 格式有誤：$CONF" ;;
+    *.yaml|*.yml)
+      command -v jq >/dev/null 2>&1 || die "讀 YAML 需要 jq"
+      CONF_TEXT=$(yaml_to_json "$CONF" | jq -r "$JQ_NORMALIZE") || die "YAML 格式有誤：$CONF" ;;
+    *)
+      CONF_TEXT=$(cat "$CONF") ;;
+  esac
+}
+
+to_yaml() {
+  echo "# 主機沒寫 project / zone 時套用（取消註解即可）"
+  echo "# defaults:"
+  echo "#   project: my-project"
+  echo "#   zone: asia-east1-b"
+  echo
+  echo "hosts:"
+  awk '
+    /^[[:space:]]*(#|$)/ { next }
+    /^[[:space:]]*>/ {
+      sub(/^[[:space:]]*>[[:space:]]*/, "")
+      if (!ep) { print "    endpoints:"; ep = 1 }
+      n = split($0, f, /[[:space:]]+/)
+      if (n >= 2) { rest = $0; sub(/^[^[:space:]]+[[:space:]]+/, "", rest); printf "      %s: \"%s\"\n", f[1], rest }
+      else          printf "      - \"%s\"\n", $0
+      next
+    }
+    {
+      ep = 0
+      printf "  %s:\n    type: %s\n", $1, $2
+      if ($3 != "-") printf "    project: %s\n", $3
+      if ($4 != "-") printf "    zone: %s\n", $4
+      if ($5 != $1)  printf "    instance: %s\n", $5
+      if ($6 != "")  printf "    remote_port: %s\n", $6
+      if ($7 != "")  printf "    local_port: %s\n", $7
+    }' <<<"$CONF_TEXT"
+}
+
+# 對齊欄位：有 column 用 column，沒有就用 awk
+tab() {
+  if command -v column >/dev/null 2>&1; then column -t
+  else awk '{for(i=1;i<=NF;i++){w[NR,i]=$i; if(length($i)>m[i])m[i]=length($i)} if(NF>nf)nf=NF; n=NR}
+            END{for(r=1;r<=n;r++){l=""; for(i=1;i<=nf;i++) l=l sprintf("%-"m[i]+2"s",w[r,i]); sub(/ +$/,"",l); print l}}'
+  fi
+}
+
+# 主機行（排除註解、空行、入口行）
+entries() { grep -Ev '^[[:space:]]*(#|$|>)' <<<"$CONF_TEXT" || true; }
+
+# 某台主機底下的入口行（去掉前面的 ">"）
+endpoints_of() {
+  awk -v n="$1" '
+    /^[[:space:]]*(#|$)/ { next }
+    /^[[:space:]]*>/     { if (cur == n) { sub(/^[[:space:]]*>[[:space:]]*/, ""); print }; next }
+                         { cur = $1 }' <<<"$CONF_TEXT"
+}
+
+# 印出入口：替換 {port}/{rport}，有標籤的對齊
+show_endpoints() {
+  local name="$1" lport="${2:-}" rport="${3:-}" eps
+  eps=$(endpoints_of "$name")
+  [[ -n "$eps" ]] || return 0
+  [[ -n "$lport" ]] && eps="${eps//\{port\}/$lport}"
+  [[ -n "$rport" ]] && eps="${eps//\{rport\}/$rport}"
+  awk '
+    { line[NR] = $0; if (NF >= 2 && length($1) > w) w = length($1) }
+    END {
+      for (i = 1; i <= NR; i++) {
+        n = split(line[i], f, /[[:space:]]+/)
+        if (n >= 2) { lab = f[1]; rest = line[i]; sub(/^[^[:space:]]+[[:space:]]+/, "", rest)
+                      printf "  %-*s  %s\n", w, lab, rest }
+        else          printf "  %s\n", line[i]
+      }
+    }' <<<"$eps"
+}
+
+list() {
+  { echo "NAME TYPE PROJECT ZONE INSTANCE R_PORT L_PORT"; entries; } | tab
+}
+
+connect() {
+  local line="$1"; shift
+  local name type project zone instance rport lport
+  read -r name type project zone instance rport lport <<<"$line"
+
+  local -a flags=()
+  [[ -n "$project" && "$project" != "-" ]] && flags+=(--project "$project")
+  [[ -n "$zone"    && "$zone"    != "-" ]] && flags+=(--zone "$zone")
+
+  case "$type" in
+    ssh)
+      echo "→ [$name] ssh $instance via IAP" >&2
+      if [[ -n "$(endpoints_of "$name")" ]]; then
+        echo "  連上後可用：" >&2
+        show_endpoints "$name" "${lport:-}" "${rport:-}" >&2
+      fi
+      exec gcloud compute ssh "$instance" ${flags[@]+"${flags[@]}"} --tunnel-through-iap "$@"
+      ;;
+    tunnel)
+      [[ -n "${rport:-}" ]] || die "$name 是 tunnel 但沒有 remote_port"
+      lport="${lport:-$rport}"
+      echo "→ [$name] localhost:$lport  ⇢  $instance:$rport  連線中…" >&2
+      if [[ -n "$(endpoints_of "$name")" ]]; then
+        echo "  連線入口（tunnel 建立後可用）：" >&2
+        show_endpoints "$name" "$lport" "$rport" >&2
+      fi
+      # 提示先顯示；收到 Listening on port 才顯示已連線。
+      gcloud compute start-iap-tunnel "$instance" "$rport" \
+          --local-host-port="localhost:$lport" ${flags[@]+"${flags[@]}"} 2>&1 \
+        | while IFS= read -r msg; do
+            if [[ "$msg" == *"Listening on port"* ]]; then
+              echo
+              echo "✔ [$name] 已連線  localhost:$lport  ⇢  $instance:$rport"
+              echo "  (Ctrl-C 結束)"
+              echo
+            else
+              echo "$msg" >&2
+            fi
+          done
+      ;;
+    *) die "$name 的 type 不認得：${type}（只支援 ssh / tunnel）" ;;
+  esac
+}
+
+find_by_name() {
+  entries | awk -v n="$1" '$1==n {print; found=1; exit} END {exit !found}'
+}
+
+pick() {
+  local -a lines=()
+  local l
+  while IFS= read -r l; do lines+=("$l"); done < <(entries)
+  (( ${#lines[@]} )) || die "設定檔是空的：${CONF}（iap setup、iap edit 或 iap import）"
+
+  if command -v fzf >/dev/null 2>&1; then
+    local sel
+    sel=$(printf '%s\n' "${lines[@]}" | tab \
+          | fzf --height=40% --reverse --prompt='IAP> ' \
+                --header='NAME  TYPE  PROJECT  ZONE  INSTANCE  R_PORT  L_PORT' \
+                --preview="$0 show {1}" --preview-window=down,30%) || exit 0
+    find_by_name "$(awk '{print $1}' <<<"$sel")"
+  else
+    local PS3='選哪台？ ' opt
+    select opt in "${lines[@]}"; do
+      [[ -n "$opt" ]] && { echo "$opt"; return; }
+    done
+    exit 0
+  fi
+}
+
+# ---------- import from history ----------
+parse_cmd() {
+  local -a t; read -ra t <<<"$1"
+  local mode="" inst="" proj="-" zone="-" rport="" lport="" i=0 n=${#t[@]} tok prev=""
+  while (( i < n )); do
+    tok="${t[i]}"
+    case "$tok" in
+      ssh)               [[ -z "$mode" && "$prev" == compute ]] && mode=ssh ;;
+      start-iap-tunnel)  mode=tunnel ;;
+      --zone=*)          zone="${tok#*=}" ;;
+      --zone)            zone="${t[i+1]:-}"; i=$((i+1)) ;;
+      --project=*)       proj="${tok#*=}" ;;
+      --project)         proj="${t[i+1]:-}"; i=$((i+1)) ;;
+      --local-host-port=*) lport="${tok##*:}" ;;
+      --local-host-port) lport="${t[i+1]##*:}"; i=$((i+1)) ;;
+      --)                break ;;
+      -*)                ;;
+      *)
+        if [[ -n "$mode" ]]; then
+          if   [[ -z "$inst" ]]; then inst="$tok"
+          elif [[ "$mode" == tunnel && -z "$rport" ]]; then rport="$tok"
+          fi
+        fi ;;
+    esac
+    prev="$tok"; i=$((i+1))
+  done
+  [[ -n "$mode" && -n "$inst" ]] || return 0
+  local name="${inst#*@}"
+  [[ "$mode" == tunnel ]] && name="$name-$rport"
+  echo "$name $mode $proj $zone $inst ${rport} ${lport}"
+}
+
+import_history() {
+  local -a files=()
+  for f in "$HOME/.bash_history" "$HOME/.zsh_history" "${HISTFILE:-}"; do
+    [[ -n "$f" && -f "$f" ]] && files+=("$f")
+  done
+  (( ${#files[@]} )) || die "找不到 history 檔"
+
+  echo "# 以下由 iap import 產生，確認後貼進 ${CONF}（或：iap import >> ${CONF}）" >&2
+  cat "${files[@]}" 2>/dev/null \
+    | sed -E 's/^: [0-9]+:[0-9]+;//' \
+    | grep -aE 'gcloud +compute +(ssh|start-iap-tunnel)' \
+    | while IFS= read -r cmd; do parse_cmd "$cmd"; done \
+    | sort -u | tab
+}
+
+# ---------- self / version / update ----------
+# 解析 symlink，找到 repo 裡真正的腳本位置（相容 macOS，不靠 readlink -f）
+self_path() {
+  local p="${BASH_SOURCE[0]}" d
+  while [[ -L "$p" ]]; do
+    d=$(cd -P "$(dirname "$p")" && pwd)
+    p=$(readlink "$p"); [[ "$p" == /* ]] || p="$d/$p"
+  done
+  echo "$(cd -P "$(dirname "$p")" && pwd)/$(basename "$p")"
+}
+
+repo_dir() {
+  local d; d=$(dirname "$(self_path)")
+  git -C "$d" rev-parse --show-toplevel 2>/dev/null
+}
+
+show_version() {
+  local r desc=""
+  if r=$(repo_dir) && desc=$(git -C "$r" describe --tags --always --dirty 2>/dev/null); then
+    echo "iap $VERSION ($desc)"
+  else
+    echo "iap $VERSION"
+  fi
+}
+
+self_update() {
+  local installed_bin source
+  installed_bin=$(dirname "$(self_path)")
+  if [[ -d "$installed_bin/.iap" ]]; then
+    [[ -f "$installed_bin/.iap/bash-source" ]] || die '找不到安裝來源紀錄，請從原始碼執行一次 install.sh 以升級安裝資訊。'
+    IFS= read -r source < "$installed_bin/.iap/bash-source"
+    [[ -n "$source" && "$source" != "$installed_bin" && -f "$source/iap" && -f "$source/install.sh" ]] ||
+      die '安裝來源已移動或刪除，請從新的原始碼目錄重新安裝，以更新來源紀錄；現有連線仍可使用。'
+    if command -v git >/dev/null 2>&1 && git -C "$source" rev-parse --show-toplevel >/dev/null 2>&1; then
+      bash "$source/iap" update || die '更新來源失敗，未更新安裝副本。'
+    else
+      echo "來源不是 Git checkout，從本機目錄同步：$source" >&2
+    fi
+    echo "複製新版到：$installed_bin" >&2
+    bash "$source/install.sh" --bin-dir "$installed_bin" --no-path || die '安裝新版失敗。'
+    echo "✔ 更新完成：iap $VERSION → $(bash "$installed_bin/iap" version)"
+    return
+  fi
+  command -v git >/dev/null 2>&1 || die "需要 git"
+  local r; r=$(repo_dir) || die "這份 iap 不在 git repo 裡（$(self_path)），請用 git clone + install.sh 安裝"
+  [[ -z "$(git -C "$r" status --porcelain)" ]] || die "$r 有未 commit 的修改，先處理掉再更新"
+
+  local before after
+  before=$(git -C "$r" rev-parse HEAD)
+  echo "更新中：$r" >&2
+  git -C "$r" pull --ff-only --tags --quiet || die "git pull 失敗"
+  after=$(git -C "$r" rev-parse HEAD)
+
+  if [[ "$before" == "$after" ]]; then
+    echo "已是最新版：$(show_version)"
+  else
+    echo "已更新：$VERSION → $(bash "$(self_path)" version)"
+    git -C "$r" log --oneline --no-decorate "$before..$after"
+  fi
+}
+
+export_conf() (
+  umask 077
+  local output= backup staged original=
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      -o|--output)
+        [[ $# -ge 2 && -n $2 && -z $output ]] || die '用法：iap export [FILE] 或 iap export --output FILE'
+        output=$2; shift 2 ;;
+      -h|--help) echo '用法：iap export [FILE] 或 iap export --output FILE；保留原始格式，不轉換格式。'; exit 0 ;;
+      -*) die "未知參數：$1" ;;
+      *) [[ -z $output ]] || die '只能指定一個輸出檔案'; output=$1; shift ;;
+    esac
+  done
+  [[ -f $CONF ]] || die "找不到設定檔：$CONF"
+  if [[ -z $output ]]; then cat "$CONF"; exit; fi
+  [[ ! -L $output ]] || die "拒絕覆寫符號連結：$output"
+  [[ ! -e $output || -f $output ]] || die "輸出不是一般檔案：$output"
+  [[ ! $CONF -ef $output ]] || die '輸出不可為目前設定檔本身。'
+  if [[ -f $output ]]; then
+    local answer
+    printf '已有 %s，覆寫前將備份，是否繼續？ [y/N]: ' "$output" >&2
+    IFS= read -r answer || exit 1
+    case $answer in y|Y|yes|YES) ;; *) exit 0 ;; esac
+    original=$(mktemp "${output}.tmp-XXXXXX")
+    cp "$output" "$original"
+  fi
+  mkdir -p "$(dirname "$output")"
+  staged=$(mktemp "${output}.tmp-XXXXXX")
+  trap 'rm -f "$staged"; [[ -z $original ]] || rm -f "$original"' EXIT
+  cp "$CONF" "$staged"
+  chmod 600 "$staged"
+  [[ ! -L $output ]] || die "拒絕覆寫符號連結：$output"
+  if [[ -n $original ]]; then
+    cmp -s "$output" "$original" || die '輸出檔在操作期間已變更，未覆寫。'
+    backup=$(mktemp "${output}.backup-XXXXXX")
+    cp "$original" "$backup"
+    chmod 600 "$backup"
+    printf '原檔備份：%s\n' "$backup"
+  else
+    [[ ! -e $output ]] || die '輸出檔在操作期間已建立，未覆寫。'
+  fi
+  mv -f "$staged" "$output"
+  printf '已匯出：%s\n' "$output"
+)
+
+# ---------- main ----------
+# 不需要讀設定檔的指令先處理（設定檔壞掉也還能更新）
+case "${1:-}" in
+  export) shift; export_conf "$@"; exit ;;
+  remove|reset|uninstall|edit)
+    if [[ $1 != edit || $# -gt 1 ]]; then
+      action=$1; shift
+      command -v python3 >/dev/null || die '管理連線需要 Python 3。'
+      bin=$(dirname "$(self_path)")
+      root=$bin
+      [[ ! -f "$root/.iap/scripts/manage.py" ]] || root="$root/.iap"
+      exec python3 "$root/scripts/manage.py" "$action" --config "$CONF" --bin-dir "$bin" "$@"
+    fi ;;
+esac
+case "${1:-}" in
+  setup|new)
+    action=$1
+    shift
+    root=$(dirname "$(self_path)")
+    if [[ -f "$root/.iap/scripts/setup.sh" ]]; then root="$root/.iap"; fi
+    if [[ $action == new ]]; then
+      exec bash "$root/scripts/setup.sh" --new "$@"
+    fi
+    exec bash "$root/scripts/setup.sh" "$@" ;;
+  version|-v|--version) show_version; exit ;;
+  update|self-update)   self_update; exit ;;
+  help|-h|--help)       awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$(self_path)"; exit ;;
+esac
+
+ensure_conf
+load_conf
+
+case "${1:-}" in
+  "")            connect "$(pick)" ;;
+  ls|list)       list ;;
+  edit)          exec "${EDITOR:-vi}" "$CONF" ;;
+  import)        import_history ;;
+  to-yaml)
+    # 固定讀純文字 hosts，避免 `iap to-yaml > hosts.yaml` 先建出空檔反而被讀到
+    src="$CONF_DIR/hosts"; [[ -n "${IAP_CONF:-}" ]] && src="$IAP_CONF"
+    [[ -f "$src" ]] || die "找不到純文字設定檔：$src"
+    CONF_TEXT=$(cat "$src"); to_yaml ;;
+  show)
+    [[ -n "${2:-}" ]] || die "用法：iap show <name>"
+    line=$(find_by_name "$2") || die "找不到 $2"
+    read -r _ _ _ _ _ rp lp <<<"$line"
+    show_endpoints "$2" "${lp:-$rp}" "$rp"
+    ;;
+  names)         entries | awk '{print $1}' ;;   # 給補全用
+  *)
+    name="$1"; shift
+    line=$(find_by_name "$name") || die "找不到 ${name}（iap ls 看清單）"
+    connect "$line" "$@"
+    ;;
+esac

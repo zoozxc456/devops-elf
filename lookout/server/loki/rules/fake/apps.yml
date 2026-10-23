@@ -1,0 +1,15 @@
+groups:
+  - name: application-logs
+    interval: 1m
+    rules:
+      - alert: AppErrorLogBurst
+        expr: |
+          sum by (host, env, service) (
+            count_over_time({env="prod", service!="", level=~"ERROR|CRITICAL"}[5m])
+          ) > 20
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ $labels.host }} / {{ $labels.service }} 5 分鐘內 {{ $value }} 筆錯誤 log'
+# 未輸出 log 不一定是故障，因此不預設使用 absent_over_time 檢查 log 中斷。
+# 有固定 heartbeat 的服務可另加指定 host/service 的 LogsMissing 規則。

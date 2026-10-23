@@ -1,0 +1,82 @@
+// 由 scripts/plugins.py 組合共用解析與啟用插件，請勿直接放入 Alloy 載入目錄。
+loki.process "containers" {
+  forward_to = [loki.write.default.receiver]
+
+  // 開了 tty 的容器輸出會帶 ANSI 色碼和 \r
+  stage.decolorize {}
+
+  stage.replace {
+    expression = "(\\r)"
+    replace    = ""
+  }
+
+  // --------------------------------------------------------------------------
+  // postgres（預設 log_line_prefix '%m [%p] '）：2026-10-22 05:12:33.123 UTC [123] ERROR:  ...
+  // --------------------------------------------------------------------------
+  stage.match {
+    selector = "{format=\"postgres\"}"
+
+    stage.multiline {
+      firstline     = "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{3} "
+      max_wait_time = "3s"
+      max_lines     = 200
+    }
+
+    stage.regex {
+      expression = "^\\S+ \\S+ \\S+ \\[\\d+\\] (?P<level>[A-Z]+):"
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // json：每行一個 JSON 物件（Serilog CLEF、pino、zap、structlog、winston...）
+  // --------------------------------------------------------------------------
+  stage.match {
+    selector = "{format=\"json\"}"
+
+    stage.json {
+      expressions = { level = "level || lvl || severity || \"@l\"" }
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // logfmt：level=info msg="..."（Go slog、logrus、go-kit）
+  // --------------------------------------------------------------------------
+  stage.match {
+    selector = "{format=\"logfmt\"}"
+
+    stage.logfmt {
+      mapping = { level = "" }
+    }
+  }
+
+  // LOOKOUT_PLUGIN_STAGES
+
+  // --------------------------------------------------------------------------
+  // 統一 level：TRACE / DEBUG / INFO / WARN / ERROR / CRITICAL，告警與儀表板只認這幾個值。
+  // 抽不到 level 時樣板結果為空字串，Alloy 會刪掉這個欄位，不會產生空的 label
+  // --------------------------------------------------------------------------
+  stage.template {
+    source   = "level"
+    template = `{{- if .Value -}}
+{{- $v := ToUpper .Value -}}
+{{- if or (eq $v "VERBOSE") (eq $v "10") -}}TRACE
+{{- else if eq $v "20" -}}DEBUG
+{{- else if or (eq $v "INFORMATION") (eq $v "LOG") (eq $v "NOTICE") (eq $v "30") -}}INFO
+{{- else if or (eq $v "WARNING") (eq $v "40") -}}WARN
+{{- else if or (eq $v "ERR") (eq $v "50") -}}ERROR
+{{- else if or (eq $v "FATAL") (eq $v "PANIC") (eq $v "CRIT") (eq $v "ALERT") (eq $v "EMERG") (eq $v "60") -}}CRITICAL
+{{- else -}}{{ $v }}
+{{- end -}}
+{{- end -}}`
+  }
+
+  stage.labels {
+    values = { level = "" }
+  }
+
+  // 插件可能修改 env；解析完成後再次套用環境閘門
+  stage.match {
+    selector = "{env!~\"" + sys.env("LOOKOUT_ENVS") + "\"}"
+    action   = "drop"
+  }
+}

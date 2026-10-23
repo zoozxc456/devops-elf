@@ -1,0 +1,21 @@
+- name: Reload prometheus
+  ansible.builtin.command: docker kill --signal=HUP lookout-prometheus
+  changed_when: true
+- name: Recreate alertmanager
+  community.docker.docker_compose_v2:
+    project_src: '{{ lookout_root }}/server'
+    services:
+      - alertmanager
+    recreate: always
+- name: Recreate loki
+  community.docker.docker_compose_v2:
+    project_src: '{{ lookout_root }}/server'
+    services:
+      - loki
+    recreate: always
+- name: Recreate grafana
+  community.docker.docker_compose_v2:
+    project_src: '{{ lookout_root }}/server'
+    services:
+      - grafana
+    recreate: always

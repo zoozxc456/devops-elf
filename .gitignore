@@ -1,0 +1,49 @@
+# OS metadata
+.DS_Store
+._*
+Thumbs.db
+Desktop.ini
+
+# Editor and IDE local files
+.idea/
+*.swp
+*.swo
+*~
+
+# Local environment files (keep distributable examples)
+.env
+.env.*
+!.env.example
+!.env.*.example
+!.env.sample
+!.env.*.sample
+!.env.template
+!.env.*.template
+!.env.dist
+
+# Local IAP connection settings
+hosts.local
+hosts.local.*
+
+# Local credentials
+.aws/
+.ssh/
+.vault-pass
+
+# Python caches and virtual environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Configuration backups and staging files
+*.backup-*
+*.tmp-*
+
+# Project-specific data and generated files are handled by each .gitignore.

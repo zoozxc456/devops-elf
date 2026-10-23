@@ -1,0 +1,7 @@
+# lookout_* / vault_* 是 server 與 agent 共用的變數，刻意不加 role 前綴；
+# task 名稱用檔名（docker-compose.yml、loki.yml）比大寫開頭更好認
+skip_list:
+  - var-naming[no-role-prefix]
+  - name[casing]
+exclude_paths:
+  - .collections/

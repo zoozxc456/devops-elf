@@ -1,0 +1,10 @@
+apiVersion: 1
+
+# 儀表板以 repo 中的 JSON 為準；在介面上改了要匯出回 grafana/dashboards/ 再 commit
+providers:
+  - name: lookout
+    folder: Lookout
+    type: file
+    allowUiUpdates: false
+    options:
+      path: /etc/grafana/dashboards

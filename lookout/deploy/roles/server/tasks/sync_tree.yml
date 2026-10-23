@@ -1,0 +1,41 @@
+- name: 同步目錄：建立目錄 {{ tree_dest }}
+  ansible.builtin.file:
+    path: '{{ tree_dest }}/{{ item.path }}'
+    state: directory
+    mode: '0755'
+  loop: '{{ [{''path'': ''''}] + (lookup(''community.general.filetree'', tree_src, wantlist=True) | selectattr(''state'', ''eq'', ''directory'')
+    | list) }}'
+  loop_control:
+    label: '{{ item.path or ''.'' }}'
+- name: 同步目錄：複製檔案 {{ tree_dest }}
+  ansible.builtin.copy:
+    src: '{{ item.src }}'
+    dest: '{{ tree_dest }}/{{ item.path }}'
+    mode: '0644'
+  loop: '{{ lookup(''community.general.filetree'', tree_src, wantlist=True) | selectattr(''state'', ''eq'', ''file'') | list }}'
+  loop_control:
+    label: '{{ item.path }}'
+  register: sync_tree_copy
+- name: 同步目錄：列出 VM 上現有的檔案 {{ tree_dest }}
+  ansible.builtin.find:
+    paths: '{{ tree_dest }}'
+    recurse: true
+    hidden: true
+    file_type: file
+  register: sync_tree_existing
+- name: 同步目錄：刪除 repo 已移除的檔案 {{ tree_dest }}
+  ansible.builtin.file:
+    path: '{{ item }}'
+    state: absent
+  loop: |-
+    {{ sync_tree_existing.files | map(attribute='path')
+       | reject('in', lookup('community.general.filetree', tree_src, wantlist=True)
+                      | selectattr('state', 'eq', 'file')
+                      | map(attribute='path')
+                      | map('regex_replace', '^', tree_dest ~ '/')
+                      | list)
+       | list }}
+  register: sync_tree_cleanup
+- name: 同步目錄：彙整結果 {{ tree_dest }}
+  ansible.builtin.set_fact:
+    tree_changed: '{{ (sync_tree_copy is changed) or (sync_tree_cleanup is changed) }}'

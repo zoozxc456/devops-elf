@@ -1,0 +1,140 @@
+- name: 產生插件設定
+  ansible.builtin.include_tasks: '{{ playbook_dir }}/tasks/render-plugins.yml'
+- name: 檢查必要變數
+  ansible.builtin.assert:
+    that:
+    - lookout_server_ip is defined and lookout_server_ip != '192.0.2.10'
+    - vault_grafana_admin_password is defined and vault_grafana_admin_password != 'CHANGE_ME'
+    - '"''" not in vault_grafana_admin_password'
+    - vault_grafana_admin_password | string | length > 0
+    - vault_grafana_admin_password | string is not search("[\r\n]")
+    fail_msg: 檢查 group_vars/all/main.yml 的 lookout_server_ip 與 vault.yml（Grafana 密碼不能含單引號）
+    quiet: true
+- name: 檢查 secret 檔名
+  ansible.builtin.assert:
+    that:
+    - item is match('^[A-Za-z0-9_][A-Za-z0-9_.-]*$')
+    quiet: true
+  loop: '{{ vault_alertmanager_secrets.keys() | list }}'
+  no_log: true
+- name: 資料目錄：建立並設定擁有者
+  ansible.builtin.file:
+    path: '{{ lookout_data_dir }}/{{ item.dir }}'
+    state: directory
+    owner: '{{ item.owner }}'
+    group: '{{ item.group }}'
+    mode: '0750'
+  loop: '{{ lookout_data_owners }}'
+  loop_control:
+    label: '{{ item.dir }}'
+- name: 建立部署目錄
+  ansible.builtin.file:
+    path: '{{ item.path }}'
+    state: directory
+    mode: '{{ item.mode }}'
+  loop:
+  - path: '{{ lookout_root }}/server'
+    mode: '0755'
+  - path: '{{ lookout_root }}/server/alertmanager'
+    mode: '0755'
+  - path: '{{ lookout_root }}/server/loki'
+    mode: '0755'
+  - path: '{{ lookout_root }}/server/secrets'
+    mode: '0755'
+- name: docker-compose.yml
+  ansible.builtin.copy:
+    src: '{{ playbook_dir }}/../server/docker-compose.yml'
+    dest: '{{ lookout_root }}/server/docker-compose.yml'
+    mode: '0644'
+- name: 記錄部署版本
+  ansible.builtin.copy:
+    src: '{{ playbook_dir }}/../VERSION'
+    dest: '{{ lookout_root }}/server/VERSION'
+    mode: '0644'
+- name: Prometheus 設定與規則
+  ansible.builtin.include_tasks: sync_tree.yml
+  vars:
+    tree_src: '{{ playbook_dir }}/../server/prometheus'
+    tree_dest: '{{ lookout_root }}/server/prometheus'
+- name: Prometheus 設定有變動時重新載入
+  ansible.builtin.debug:
+    msg: Prometheus 設定有變動
+  changed_when: tree_changed
+  notify: Reload prometheus
+- name: Loki 告警規則
+  ansible.builtin.include_tasks: sync_tree.yml
+  vars:
+    tree_src: '{{ lookout_plugin_build.path }}/server/generated/loki-rules'
+    tree_dest: '{{ lookout_root }}/server/generated/loki-rules'
+- name: Grafana 儀表板
+  ansible.builtin.include_tasks: sync_tree.yml
+  vars:
+    tree_src: '{{ lookout_plugin_build.path }}/server/generated/dashboards'
+    tree_dest: '{{ lookout_root }}/server/generated/dashboards'
+- name: Grafana provisioning
+  ansible.builtin.include_tasks: sync_tree.yml
+  vars:
+    tree_src: '{{ playbook_dir }}/../server/grafana/provisioning'
+    tree_dest: '{{ lookout_root }}/server/grafana/provisioning'
+- name: Grafana provisioning 有變動時重建（資料來源只在啟動時讀）
+  ansible.builtin.debug:
+    msg: Grafana provisioning 有變動
+  changed_when: tree_changed
+  notify: Recreate grafana
+- name: alertmanager.yml
+  ansible.builtin.copy:
+    src: '{{ lookout_alertmanager_config }}'
+    dest: '{{ lookout_root }}/server/alertmanager/alertmanager.yml'
+    mode: '0644'
+  notify: Recreate alertmanager
+- name: loki.yml
+  ansible.builtin.copy:
+    src: '{{ playbook_dir }}/../server/loki/loki.yml'
+    dest: '{{ lookout_root }}/server/loki/loki.yml'
+    mode: '0644'
+  notify: Recreate loki
+- name: 通知 secrets（Alertmanager 以 nobody 讀取）
+  ansible.builtin.copy:
+    content: '{{ item.value }}'
+    dest: '{{ lookout_root }}/server/secrets/{{ item.key }}'
+    owner: '65534'
+    group: '65534'
+    mode: '0400'
+  loop: '{{ vault_alertmanager_secrets | dict2items }}'
+  no_log: true
+  notify: Recreate alertmanager
+- name: .env
+  ansible.builtin.template:
+    src: server.env.j2
+    dest: '{{ lookout_root }}/server/.env'
+    mode: '0600'
+  no_log: true
+- name: docker compose up
+  community.docker.docker_compose_v2:
+    project_src: '{{ lookout_root }}/server'
+    state: present
+    pull: missing
+    remove_orphans: true
+- name: 套用需要 reload / 重建的變更
+  ansible.builtin.meta: flush_handlers
+- name: 健康檢查
+  ansible.builtin.uri:
+    url: '{{ item }}'
+    status_code: 200
+  loop:
+  - http://{{ lookout_server_ip }}:9090/-/ready
+  - http://{{ lookout_server_ip }}:3100/ready
+  - http://{{ grafana_bind_addr }}:3000/api/health
+  register: server_health
+  until: server_health.status == 200
+  retries: 24
+  delay: 5
+  when: not ansible_check_mode
+- name: 移除控制端插件暫存目錄
+  ansible.builtin.file:
+    path: '{{ lookout_plugin_build.path }}'
+    state: absent
+  delegate_to: localhost
+  become: false
+  check_mode: false
+  changed_when: false

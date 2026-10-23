@@ -1,0 +1,63 @@
+// 這台主機要監控的資料庫。複製成 targets.alloy 後依實際情況增刪（targets.alloy 不進 git）：
+//   cp alloy/targets.alloy.example alloy/targets.alloy
+//
+// - 每個實例的名稱（引號內）在這個檔案裡不能重複，只能用英數與底線
+// - 連線字串放 .env，這裡用 sys.env("...") 讀
+// - 只寫這台主機上真的有的資料庫，否則 Alloy 會一直報連線失敗
+// - 資料庫容器必須在 APP_NETWORK 上，Alloy 才連得到
+// 監控帳號的建立方式見 docs/targets.md
+
+// lookout_postgres "main" {
+//   env        = "prod"
+//   instance   = "postgres-main"
+//   dsn        = sys.env("PG_DSN_MAIN")
+//   forward_to = [prometheus.relabel.gate.receiver]
+// }
+
+// lookout_mysql "main" {
+//   env        = "prod"
+//   instance   = "mysql-main"
+//   dsn        = sys.env("MYSQL_DSN_MAIN")
+//   forward_to = [prometheus.relabel.gate.receiver]
+// }
+
+// lookout_redis "cache" {
+//   env        = "prod"
+//   instance   = "redis-cache"
+//   dsn        = sys.env("REDIS_ADDR_CACHE")
+//   forward_to = [prometheus.relabel.gate.receiver]
+// }
+
+// ----------------------------------------------------------------------------
+// 選用：收主機上的 log 檔（程式不在容器裡跑時）。
+// 需要在 docker-compose.yml 的 volumes 加一行把目錄掛進來，例如：
+//   - /var/log/myapp:/var/log/host/myapp:ro
+// ----------------------------------------------------------------------------
+
+// local.file_match "myapp" {
+//   path_targets = [{
+//     "__path__"  = "/var/log/host/myapp/*.log",
+//     "env"       = "prod",
+//     "container" = "myapp",
+//     "service"   = "myapp",
+//     "format"    = "json",
+//   }]
+// }
+//
+// loki.source.file "myapp" {
+//   targets       = local.file_match.myapp.targets
+//   forward_to    = [loki.relabel.myapp.receiver]
+//   // 第一次啟動不回補舊 log
+//   tail_from_end = true
+// }
+//
+// // 拿掉 loki.source.file 自動加的 filename label，讓 label 與容器來源一致；
+// // 之後走跟容器 log 一樣的解析流程（依 format）
+// loki.relabel "myapp" {
+//   forward_to = [loki.process.containers.receiver]
+//
+//   rule {
+//     action = "labeldrop"
+//     regex  = "filename"
+//   }
+// }

@@ -1,0 +1,30 @@
+- name: Lookout server（監控主機）
+  hosts: lookout_server
+  become: true
+  tags:
+    - server
+  roles:
+    - server
+  pre_tasks:
+    - name: 確認 vault 已加密
+      ansible.builtin.import_tasks: tasks/check-vault.yml
+      delegate_to: localhost
+      become: false
+      run_once: true
+      tags:
+        - always
+- name: Lookout agent（每台 Docker 主機）
+  hosts: lookout_agent
+  become: true
+  tags:
+    - agent
+  roles:
+    - agent
+  pre_tasks:
+    - name: 確認 vault 已加密
+      ansible.builtin.import_tasks: tasks/check-vault.yml
+      delegate_to: localhost
+      become: false
+      run_once: true
+      tags:
+        - always

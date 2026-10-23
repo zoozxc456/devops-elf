@@ -1,0 +1,57 @@
+# Lookout agent：部署在每台要被監控的 Docker 主機上
+#   cp .env.example .env && vi .env
+#   cp alloy/targets.alloy.example alloy/targets.alloy && vi alloy/targets.alloy   # 選用：Postgres / MySQL / Redis
+#   python3 ../scripts/plugins.py apply   # 或 apply odoo nginx
+#   docker compose up -d
+name: lookout-agent
+
+services:
+  alloy:
+    image: grafana/alloy:v1.20.1
+    container_name: lookout-alloy
+    # node_uname_info 的 nodename 取自容器 hostname；不固定的話每次重建都會變成新的容器 ID，
+    # Node Exporter Full 的 Nodename 下拉會留著舊值而選到沒資料的那個
+    hostname: ${HOST_NAME}
+    restart: always
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      # 載入整個目錄的 *.alloy：config.alloy（核心）、modules.alloy（exporter 元件）、targets.alloy（各主機自己的實例）
+      - /etc/alloy
+    env_file: .env
+    # cAdvisor 需要讀主機的 cgroup 與 Docker 狀態
+    privileged: true
+    cgroup: host
+    volumes:
+      - ./alloy:/etc/alloy:ro
+      - type: bind
+        source: ./generated/log-pipeline.alloy
+        target: /etc/alloy/log-pipeline.alloy
+        read_only: true
+        bind:
+          create_host_path: false
+      - alloy-data:/var/lib/alloy/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # cAdvisor 透過 containerd 讀 Docker 容器資訊；沒掛的話 container_* 指標只剩 systemd cgroup
+      - /run/containerd/containerd.sock:/run/containerd/containerd.sock:ro
+      - /:/rootfs:ro,rslave
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    ports:
+      # Alloy 除錯介面只綁本機，要看時用 ssh -L 12345:127.0.0.1:12345
+      - "127.0.0.1:12345:12345"
+    networks:
+      - app
+
+networks:
+  # 應用程式所在的 Docker 網路：Alloy 透過它用容器名稱連資料庫、抓 /metrics。
+  # 要接多個網路時，在這裡和上面的 services.alloy.networks 各加一個
+  app:
+    external: true
+    name: ${APP_NETWORK}
+
+volumes:
+  alloy-data:

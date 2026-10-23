@@ -1,0 +1,12 @@
+FROM postgres:18
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        pgbackrest \
+        postgresql-18-pgvector \
+        ca-certificates && \
+    update-ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /var/log/pgbackrest /var/spool/pgbackrest /etc/pgbackrest && \
+    chown -R postgres:postgres /var/log/pgbackrest /var/spool/pgbackrest /etc/pgbackrest

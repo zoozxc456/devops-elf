@@ -1,0 +1,5 @@
+# This image installs packages without COPY or ADD.
+# Only the build definition is needed in the context.
+**
+!dockerfile
+!.dockerignore

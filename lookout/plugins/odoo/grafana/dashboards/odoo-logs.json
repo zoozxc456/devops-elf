@@ -1,0 +1,348 @@
+{
+  "uid": "lookout-odoo-logs",
+  "title": "Odoo log 總覽",
+  "tags": [
+    "odoo",
+    "lookout"
+  ],
+  "schemaVersion": 39,
+  "editable": false,
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "refresh": "1m",
+  "templating": {
+    "list": [
+      {
+        "name": "env",
+        "label": "環境",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "loki"
+        },
+        "query": "label_values({service!=\"\"}, env)",
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": false,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": []
+      },
+      {
+        "name": "host",
+        "label": "主機",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "loki"
+        },
+        "query": "label_values({format=\"odoo\", env=~\"$env\"}, host)",
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": false,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": []
+      },
+      {
+        "name": "service",
+        "label": "服務",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "loki"
+        },
+        "query": "label_values({format=\"odoo\", env=~\"$env\", host=~\"$host\"}, service)",
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": false,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": []
+      },
+      {
+        "name": "db",
+        "label": "租戶 db（regex）",
+        "type": "textbox",
+        "query": ".*",
+        "current": {
+          "text": ".*",
+          "value": ".*"
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Log 量（依等級）",
+      "type": "timeseries",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "sum by (level) (count_over_time({host=~\"$host\", service=~\"$service\", env=~\"$env\", format=\"odoo\"} | db=~\"$db\" [$__auto]))",
+          "queryType": "range",
+          "legendFormat": "{{level}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "title": "HTTP 5xx（依 db）",
+      "type": "timeseries",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "sum by (db) (count_over_time({host=~\"$host\", service=~\"$service\", env=~\"$env\", format=\"odoo\"} | logger=\"werkzeug\" | db=~\"$db\" | regexp `\"(?P<method>[A-Z]+) (?P<path>[^ ]+) [^\"]*\" (?P<status>\\d{3}) [^ ]+ (?P<queries>\\d+) (?P<sql_s>[\\d.]+) (?P<py_s>[\\d.]+)` | status=~\"5..\" [$__auto]))",
+          "queryType": "range",
+          "legendFormat": "{{db}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "title": "錯誤數排行（依 db）",
+      "type": "bargauge",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 8,
+        "h": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "topk(15, sum by (db) (count_over_time({host=~\"$host\", service=~\"$service\", env=~\"$env\", format=\"odoo\", level=~\"ERROR|CRITICAL\"} | db=~\"$db\" [$__range])))",
+          "queryType": "instant",
+          "legendFormat": "{{db}}"
+        }
+      ],
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "錯誤來源排行（依 logger）",
+      "type": "bargauge",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 8,
+        "w": 8,
+        "h": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "topk(15, sum by (logger) (count_over_time({host=~\"$host\", service=~\"$service\", env=~\"$env\", format=\"odoo\", level=~\"ERROR|CRITICAL\"} | db=~\"$db\" [$__range])))",
+          "queryType": "instant",
+          "legendFormat": "{{logger}}"
+        }
+      ],
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "請求耗時 p95（秒）",
+      "type": "timeseries",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 8,
+        "w": 8,
+        "h": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "quantile_over_time(0.95, {host=~\"$host\", service=~\"$service\", env=~\"$env\", format=\"odoo\"} | logger=\"werkzeug\" | db=~\"$db\" | regexp `\"(?P<method>[A-Z]+) (?P<path>[^ ]+) [^\"]*\" (?P<status>\\d{3}) [^ ]+ (?P<queries>\\d+) (?P<sql_s>[\\d.]+) (?P<py_s>[\\d.]+)` | unwrap sql_s | __error__=\"\" [$__auto]) by (env)",
+          "queryType": "range",
+          "legendFormat": "SQL"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "quantile_over_time(0.95, {host=~\"$host\", service=~\"$service\", env=~\"$env\", format=\"odoo\"} | logger=\"werkzeug\" | db=~\"$db\" | regexp `\"(?P<method>[A-Z]+) (?P<path>[^ ]+) [^\"]*\" (?P<status>\\d{3}) [^ ]+ (?P<queries>\\d+) (?P<sql_s>[\\d.]+) (?P<py_s>[\\d.]+)` | unwrap py_s | __error__=\"\" [$__auto]) by (env)",
+          "queryType": "range",
+          "legendFormat": "Python"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 6,
+      "title": "慢請求（SQL 或 Python 超過 2 秒）",
+      "type": "logs",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 18,
+        "w": 24,
+        "h": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "{host=~\"$host\", service=~\"$service\", env=~\"$env\", format=\"odoo\"} | logger=\"werkzeug\" | db=~\"$db\" | regexp `\"(?P<method>[A-Z]+) (?P<path>[^ ]+) [^\"]*\" (?P<status>\\d{3}) [^ ]+ (?P<queries>\\d+) (?P<sql_s>[\\d.]+) (?P<py_s>[\\d.]+)` | sql_s > 2 or py_s > 2 | __error__=\"\" | line_format \"{{.db}}  {{.status}}  {{.method}} {{.path}}  sql={{.sql_s}}s py={{.py_s}}s queries={{.queries}}\"",
+          "queryType": "range",
+          "legendFormat": ""
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending"
+      }
+    },
+    {
+      "id": 7,
+      "title": "Odoo ERROR / CRITICAL",
+      "type": "logs",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 24,
+        "h": 12
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "{host=~\"$host\", service=~\"$service\", env=~\"$env\", format=\"odoo\", level=~\"ERROR|CRITICAL\"} | db=~\"$db\"",
+          "queryType": "range",
+          "legendFormat": ""
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending",
+        "enableLogDetails": true
+      }
+    }
+  ],
+  "timezone": ""
+}

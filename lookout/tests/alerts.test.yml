@@ -1,0 +1,54 @@
+rule_files:
+  - ../server/prometheus/rules/lookout.yml
+evaluation_interval: 1m
+tests:
+  - name: one agent disappearing does not hide behind another healthy host
+    interval: 1m
+    input_series:
+      - series: 'up{job="alloy", role="prod", host="offline", instance="offline"}'
+        values: '1+0x2 stale _x20'
+      - series: 'up{job="alloy", role="prod", host="healthy", instance="healthy"}'
+        values: '1+0x20'
+      - series: 'up{job="alloy", role="staging", host="staging", instance="staging"}'
+        values: '1+0x2 stale _x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: LookoutAgentDown
+        exp_alerts:
+          - exp_labels:
+              job: alloy
+              role: prod
+              host: offline
+              instance: offline
+              env: prod
+              severity: critical
+            exp_annotations:
+              summary: offline 的 Alloy 已斷線 5 分鐘
+  - name: same container name on another host does not hide a stopped container
+    interval: 1m
+    input_series:
+      - series: 'container_last_seen{env="prod", service="api", host="offline", name="api", id="old"}'
+        values: '0+60x2 stale _x20'
+      - series: 'container_last_seen{env="prod", service="api", host="healthy", name="api", id="active"}'
+        values: '0+60x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ContainerDown
+        exp_alerts:
+          - exp_labels:
+              host: offline
+              env: prod
+              service: api
+              name: api
+              severity: critical
+            exp_annotations:
+              summary: offline / api 容器已停止回報
+  - name: no optional integrations means no database or application outage
+    interval: 1m
+    input_series: []
+    alert_rule_test:
+      - { eval_time: 10m, alertname: PostgresDown, exp_alerts: [] }
+      - { eval_time: 10m, alertname: MysqlDown, exp_alerts: [] }
+      - { eval_time: 10m, alertname: RedisDown, exp_alerts: [] }
+      - { eval_time: 10m, alertname: AppTargetDown, exp_alerts: [] }
+      - { eval_time: 10m, alertname: LookoutAgentDown, exp_alerts: [] }

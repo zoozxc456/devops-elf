@@ -1,0 +1,48 @@
+# Version control and local tooling
+.git
+**/.git
+**/.DS_Store
+**/._*
+**/Thumbs.db
+**/Desktop.ini
+**/.idea
+**/.vscode
+**/*.swp
+**/*.swo
+**/*~
+
+# Local settings and credentials
+**/.env
+**/.env.*
+**/hosts.local
+**/hosts.local.*
+**/.aws
+**/.ssh
+**/.vault-pass
+**/secrets
+
+# Caches and temporary files
+**/__pycache__
+**/*.py[cod]
+**/.venv
+**/venv
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/.coverage
+**/.coverage.*
+**/htmlcov
+**/*.backup-*
+**/*.tmp-*
+
+# Lookout runtime data, local deployment files, and generated output
+lookout/server/data
+lookout/server/generated
+lookout/agent/generated
+lookout/agent/alloy/targets.alloy
+lookout/deploy/.collections
+lookout/deploy/.ansible
+lookout/deploy/group_vars/all/vault.yml
+lookout/deploy/inventory.local.yml
+lookout/deploy/host_vars/*.local.yml
+lookout/.version-*

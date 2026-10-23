@@ -1,0 +1,84 @@
+# Lookout server：部署在監控主機上（可以是獨立主機，也可以和應用程式同一台）
+#   cp .env.example .env && vi .env
+#   vi alertmanager/alertmanager.yml   # 選通知管道，webhook / token 放 secrets/
+#   python3 ../scripts/plugins.py apply   # 或 apply odoo nginx
+#   docker compose up -d
+name: lookout-server
+
+services:
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    container_name: lookout-prometheus
+    restart: always
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-30d}
+      # 接收 Alloy 用 remote_write 推來的 metrics
+      - --web.enable-remote-write-receiver
+      - --web.enable-lifecycle
+    volumes:
+      - ./prometheus:/etc/prometheus:ro
+      - ${LOOKOUT_DATA_DIR:-./data}/prometheus:/prometheus
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:9090:9090"
+
+  alertmanager:
+    image: prom/alertmanager:v0.34.1
+    container_name: lookout-alertmanager
+    restart: always
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      # 通知管道的 webhook / token，一個檔案一個值，不進 git
+      - ./secrets:/etc/alertmanager/secrets:ro
+      - ${LOOKOUT_DATA_DIR:-./data}/alertmanager:/alertmanager
+
+  loki:
+    image: grafana/loki:3.7.9
+    container_name: lookout-loki
+    restart: always
+    command:
+      - -config.file=/etc/loki/loki.yml
+      # loki.yml 裡的 ${LOKI_RETENTION} 等變數從環境變數展開
+      - -config.expand-env=true
+    environment:
+      - LOKI_RETENTION=${LOKI_RETENTION:-720h}
+      - LOKI_RETENTION_NONPROD=${LOKI_RETENTION_NONPROD:-168h}
+    volumes:
+      - ./loki/loki.yml:/etc/loki/loki.yml:ro
+      - type: bind
+        source: ./generated/loki-rules
+        target: /etc/loki/rules
+        read_only: true
+        bind:
+          create_host_path: false
+      - ${LOOKOUT_DATA_DIR:-./data}/loki:/loki
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:3100:3100"
+
+  grafana:
+    image: grafana/grafana:13.0.11
+    container_name: lookout-grafana
+    restart: always
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?在 .env 設定 GRAFANA_ADMIN_PASSWORD}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=${GRAFANA_ROOT_URL:-http://localhost:3000}
+      - GF_DATE_FORMATS_DEFAULT_TIMEZONE=${GRAFANA_TIMEZONE:-browser}
+      # 登入後的首頁
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/dashboards/home.json
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - type: bind
+        source: ./generated/dashboards
+        target: /etc/grafana/dashboards
+        read_only: true
+        bind:
+          create_host_path: false
+      - ${LOOKOUT_DATA_DIR:-./data}/grafana:/var/lib/grafana
+    ports:
+      - "${GRAFANA_BIND_ADDR:-127.0.0.1}:3000:3000"

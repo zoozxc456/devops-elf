@@ -1,0 +1,15 @@
+- name: 讀取 vault.yml 開頭
+  ansible.builtin.command:
+    argv:
+      - head
+      - -c
+      - "14"
+      - "{{ playbook_dir }}/group_vars/all/vault.yml"
+  register: vault_header
+  changed_when: false
+  check_mode: false
+- name: vault.yml 必須已加密
+  ansible.builtin.assert:
+    that: vault_header.stdout == '$ANSIBLE_VAULT'
+    fail_msg: group_vars/all/vault.yml 尚未加密，請先執行 ansible-vault encrypt group_vars/all/vault.yml
+    quiet: true

@@ -1,0 +1,56 @@
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      # 告警規則：<rules_directory>/<tenant>/*.yml；auth_enabled=false 時 tenant 固定為 fake
+      rules_directory: /etc/loki/rules
+
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  # parser 及插件的高基數欄位以 structured metadata 存放
+  allow_structured_metadata: true
+  volume_enabled: true
+  # 保留天數由 .env 的 LOKI_RETENTION / LOKI_RETENTION_NONPROD 控制（-config.expand-env）
+  retention_period: ${LOKI_RETENTION:-720h} # env="prod"（與沒有 env 的）
+  retention_stream:
+    - selector: '{env=~".+", env!="prod"}'
+      priority: 1
+      period: ${LOKI_RETENTION_NONPROD:-168h} # 其他 env
+
+compactor:
+  working_directory: /loki/compactor
+  retention_enabled: true
+  delete_request_store: filesystem
+
+ruler:
+  alertmanager_url: http://alertmanager:9093
+  enable_api: true
+  rule_path: /loki/rules-temp
+  wal:
+    dir: /loki/ruler-wal
+  ring:
+    kvstore:
+      store: inmemory
+
+analytics:
+  reporting_enabled: false

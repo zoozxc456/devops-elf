@@ -1,0 +1,105 @@
+- name: 產生插件設定
+  ansible.builtin.include_tasks: '{{ playbook_dir }}/tasks/render-plugins.yml'
+- name: 檢查必要變數
+  ansible.builtin.assert:
+    that:
+    - host_name | length > 0
+    - host_role | length > 0
+    - lookout_envs | length > 0
+    - lookout_server_ip is defined and lookout_server_ip != '192.0.2.10'
+    - app_network | length > 0
+    fail_msg: 請設定監控主機內網 IP、host_name、host_role 與 app_network
+    quiet: true
+- name: 檢查核心環境變數格式
+  ansible.builtin.assert:
+    that:
+    - item | string is not search("[\'\r\n]")
+    quiet: true
+  loop:
+  - '{{ host_name }}'
+  - '{{ host_role }}'
+  - '{{ app_network }}'
+  - '{{ lookout_envs }}'
+  - '{{ lookout_containers }}'
+  - '{{ lookout_server_ip }}'
+- name: 檢查 env 值（單引號與換行請先 URL encode）
+  ansible.builtin.assert:
+    that:
+    - item.key is match('^[A-Za-z_][A-Za-z0-9_]*$')
+    - item.key not in ['HOST_NAME', 'HOST_ROLE', 'APP_NETWORK', 'LOOKOUT_ENVS', 'LOOKOUT_CONTAINERS', 'LOKI_PUSH_URL', 'PROMETHEUS_REMOTE_WRITE_URL']
+    - item.value | string is not search("['\r\n]")
+    quiet: true
+  loop: '{{ (lookout_agent_env | combine(vault_lookout_agent_env.get(inventory_hostname, {}))) | dict2items }}'
+  no_log: true
+- name: 建立部署目錄
+  ansible.builtin.file:
+    path: '{{ lookout_root }}/agent/alloy'
+    state: directory
+    mode: '0755'
+- name: 建立產生設定目錄
+  ansible.builtin.file:
+    path: '{{ lookout_root }}/agent/generated'
+    state: directory
+    mode: '0755'
+- name: docker-compose.yml
+  ansible.builtin.copy:
+    src: '{{ playbook_dir }}/../agent/docker-compose.yml'
+    dest: '{{ lookout_root }}/agent/docker-compose.yml'
+    mode: '0644'
+- name: 記錄部署版本
+  ansible.builtin.copy:
+    src: '{{ playbook_dir }}/../VERSION'
+    dest: '{{ lookout_root }}/agent/VERSION'
+    mode: '0644'
+- name: Alloy 核心與 exporter 模組
+  ansible.builtin.copy:
+    src: '{{ playbook_dir }}/../agent/alloy/{{ item }}'
+    dest: '{{ lookout_root }}/agent/alloy/{{ item }}'
+    mode: '0644'
+  loop:
+  - config.alloy
+  - modules.alloy
+  notify: Recreate alloy
+- name: 組合後 log pipeline
+  ansible.builtin.copy:
+    src: '{{ lookout_plugin_build.path }}/agent/generated/log-pipeline.alloy'
+    dest: '{{ lookout_root }}/agent/generated/log-pipeline.alloy'
+    mode: '0644'
+  notify: Recreate alloy
+- name: 各主機 targets.alloy
+  ansible.builtin.copy:
+    content: '{{ lookout_agent_targets }}'
+    dest: '{{ lookout_root }}/agent/alloy/targets.alloy'
+    mode: '0644'
+  notify: Recreate alloy
+- name: .env
+  ansible.builtin.template:
+    src: agent.env.j2
+    dest: '{{ lookout_root }}/agent/.env'
+    mode: '0600'
+  no_log: true
+- name: docker compose up
+  community.docker.docker_compose_v2:
+    project_src: '{{ lookout_root }}/agent'
+    state: present
+    pull: missing
+    remove_orphans: true
+- name: 套用需要重建的變更
+  ansible.builtin.meta: flush_handlers
+- name: 健康檢查
+  ansible.builtin.uri:
+    url: http://127.0.0.1:12345/-/ready
+    status_code: 200
+  register: agent_health
+  until: agent_health.status == 200
+  retries: 12
+  delay: 5
+  when: not ansible_check_mode
+- name: 移除控制端插件暫存目錄
+  ansible.builtin.file:
+    path: '{{ lookout_plugin_build.path }}'
+    state: absent
+  delegate_to: localhost
+  become: false
+  check_mode: false
+  changed_when: false

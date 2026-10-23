@@ -1,0 +1,28 @@
+# Local settings and credentials
+**/.env
+agent/alloy/targets.alloy
+server/secrets/*
+!server/secrets/.gitkeep
+server/data/
+deploy/.collections/
+deploy/.ansible/
+deploy/.vault-pass
+deploy/group_vars/all/vault.yml
+deploy/inventory.local.yml
+deploy/host_vars/*.local.yml
+__pycache__/
+.DS_Store
+
+# scripts/plugins.py 產物
+agent/generated/
+server/generated/
+
+# setup.sh 產生的個人設定備份與寫入暫存檔
+**/.env.backup-*
+**/.env.tmp-*
+deploy/inventory.local.yml.backup-*
+deploy/inventory.local.yml.tmp-*
+deploy/group_vars/all/vault.yml.tmp-*
+
+# 版本更新期間的暫存檔
+.version-*

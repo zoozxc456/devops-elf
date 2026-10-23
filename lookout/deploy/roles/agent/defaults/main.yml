@@ -1,0 +1,11 @@
+host_name: '{{ inventory_hostname }}'
+host_role: prod
+app_network: app
+lookout_envs: '{{ host_role }}'
+lookout_containers: ''
+lookout_agent_targets: ''
+lookout_agent_env: {}
+vault_lookout_agent_env: {}
+
+# 完整啟用清單，可在 host_vars 覆寫。
+lookout_plugins: []
