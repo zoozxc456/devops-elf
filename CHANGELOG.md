@@ -30,6 +30,12 @@
 - 各專案驗證流程改由專屬文件維護；IAP 在共同版本庫中使用 `iap-vX.Y.Z` 標籤。
 - PostgreSQL 映像建置範例明確使用 `-f dockerfile`，配合實際檔名。
 
+### Fixed
+
+- CI 的 PowerShell 版本檢查改用原生 pwsh step，等待資料庫時顯示重試次數，修正 ShellCheck SC2016 / SC2034。
+- Lookout 告警測試分別掛載測試與規則目錄，避免非 root promtool 無法穿越 `0700` 暫存根目錄。
+- workflow 驗證明確要求 ShellCheck，並補上包含 ShellCheck 的本機驗證指令。
+
 ## 各專案版本紀錄
 
 | 專案 | 紀錄位置 |

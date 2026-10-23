@@ -55,6 +55,7 @@ jobs:
             if [ "$(docker inspect --format '{{.State.Health.Status}}' "$CONTAINER")" = healthy ]; then
               exit 0
             fi
+            echo "Waiting for database readiness ($attempt/60)..."
             sleep 2
           done
           echo 'Database did not become healthy.' >&2

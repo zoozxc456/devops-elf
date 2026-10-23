@@ -58,6 +58,9 @@ jobs:
           command -v jq
           command -v zsh
           command -v pwsh
-          pwsh -NoProfile -Command 'if ($PSVersionTable.PSVersion -lt [version]"7.2") { exit 1 }'
+      - name: Verify PowerShell version
+        shell: pwsh
+        run: |
+          if ($PSVersionTable.PSVersion -lt [version]'7.2') { exit 1 }
       - name: Run test suite
         run: python3 -m unittest discover -s tests -v

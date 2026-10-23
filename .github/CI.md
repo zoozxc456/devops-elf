@@ -23,7 +23,7 @@ Lookout installs Ansible and YAML support and requires PowerShell and Docker Com
 
 The PostgreSQL job builds using the project's Docker context and `.dockerignore`. Its temporary database exposes no host port and uses disposable storage. Health checks use TCP to wait for the final server rather than the initialization-only Unix socket. Containers and anonymous volumes are removed afterward. The job does not validate remote backup repositories, WAL archiving, restore procedures, or additional CPU architectures.
 
-The documentation checker validates local inline and reference link targets in tracked and unignored Markdown files, excluding fenced code examples. It does not validate heading anchors or request external URLs. actionlint checks workflow syntax, expressions, and embedded shell commands when ShellCheck is available.
+The documentation checker validates local inline and reference link targets in tracked and unignored Markdown files, excluding fenced code examples. It does not validate heading anchors or request external URLs. actionlint checks workflow syntax and expressions, and uses ShellCheck for embedded shell commands. The workflow requires ShellCheck to be present before validation.
 
 ## Local checks
 
@@ -31,6 +31,8 @@ From the repository root:
 
 ```bash
 python3 .github/scripts/check-docs.py
+# Includes ShellCheck; requires Docker and may download the validation image.
+docker run --rm -v "$PWD:/repo:ro" -w /repo rhysd/actionlint:1.7.12 -color
 ```
 
 Project test and validation commands remain documented in the guides linked from [CONTRIBUTING.md](../CONTRIBUTING.md). Dependencies and Docker must be installed locally for the corresponding checks.

@@ -52,8 +52,12 @@ docker run --rm -e HOST_NAME=check -e HOST_ROLE=prod -e LOOKOUT_ENVS=prod -e APP
   -v "$work/agent/alloy:/etc/alloy:ro" "$(image_for agent alloy)" validate /etc/alloy
 docker run --rm --entrypoint /bin/promtool -v "$work/server/prometheus:/etc/prometheus:ro" \
   "$(image_for server prometheus)" check config /etc/prometheus/prometheus.yml
-docker run --rm --entrypoint /bin/promtool -v "$work:/work:ro" -w /work/tests \
-  "$(image_for server prometheus)" test rules alerts.test.yml
+# Mount only the readable test/rule directories. The mktemp root is 0700,
+# which prevents the image's non-root user from traversing a whole-tree mount.
+docker run --rm --entrypoint /bin/promtool \
+  -v "$work/tests:/work/tests:ro" \
+  -v "$work/server/prometheus/rules:/work/server/prometheus/rules:ro" \
+  -w /work/tests "$(image_for server prometheus)" test rules /work/tests/alerts.test.yml
 docker run --rm --entrypoint /bin/amtool -v "$work/server/alertmanager:/etc/alertmanager:ro" \
   "$(image_for server alertmanager)" check-config /etc/alertmanager/alertmanager.yml
 docker run --rm -e LOKI_RETENTION=720h -e LOKI_RETENTION_NONPROD=168h \

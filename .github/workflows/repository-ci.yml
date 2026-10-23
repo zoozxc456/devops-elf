@@ -40,4 +40,6 @@ jobs:
           GOBIN: ${{ runner.temp }}/actionlint-bin
         run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
       - name: Validate workflows
-        run: '"$RUNNER_TEMP/actionlint-bin/actionlint" -color'
+        run: |
+          command -v shellcheck
+          "$RUNNER_TEMP/actionlint-bin/actionlint" -color
