@@ -94,6 +94,10 @@ docker run --rm postgres18-with-pgbackrest-client:1.1.0 pgbackrest version
 
 這個步驟只建置映像並檢查工具版本，不會啟動資料庫。pgBackRest 設定、資料掛載與 `CREATE EXTENSION vector` 操作見 [映像 README](postgres18-with-pgbackrest-client/README.zh-TW.md)。備份排程及 repo host 需另外配置。
 
+## 持續整合
+
+GitHub Actions 依異動路徑執行 IAP、Lookout 與 PostgreSQL 映像的測試，另有共用文件連結與 workflow 檢查。所有 workflow 均可手動觸發。涵蓋範圍、觸發條件與限制見 [CI 指南（英文）](.github/CI.md)。
+
 ## 驗證與維護
 
 各專案有不同的驗證方式，請依修改範圍執行，詳見 [CONTRIBUTING.md](CONTRIBUTING.md)。根目錄的 CHANGELOG 記錄共用文件及跨專案變更，各專案 CHANGELOG 保留其功能與發布歷史。

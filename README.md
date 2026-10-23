@@ -92,6 +92,10 @@ docker run --rm postgres18-with-pgbackrest-client:1.1.0 pgbackrest version
 
 This builds the image and checks the tool version. To run a database, configure storage, pgBackRest, and extensions as described in the [image README](postgres18-with-pgbackrest-client/README.md). Backup scheduling and a repository host require separate configuration.
 
+## Continuous integration
+
+GitHub Actions runs project-specific tests for IAP, Lookout, and the PostgreSQL image, plus shared documentation and workflow checks. Project jobs are filtered by changed paths; all workflows also support manual runs. See the [CI guide](.github/CI.md) for coverage, triggers, and limitations.
+
 ## Validation and maintenance
 
 Follow the project-specific checks linked from [CONTRIBUTING.md](CONTRIBUTING.md). Shared documentation and cross-project changes belong in the root changelog; each project maintains its own feature and release history.

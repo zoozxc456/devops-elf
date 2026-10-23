@@ -6,6 +6,9 @@
 
 ### Added
 
+- GitHub Actions CI：IAP Linux/macOS 測試、Lookout 測試與設定驗證、PostgreSQL 映像建置與 pgvector SQL 檢查。
+- 共用文件連結與 actionlint workflow 驗證，以及英文 CI 操作與限制說明。
+
 - 所有子專案、部署與插件 README 新增 `README.zh-TW.md`，保留繁中內容並提供語言切換。
 
 - `README.zh-TW.md`：保留繁體中文首頁，提供與英文首頁互相切換的連結。

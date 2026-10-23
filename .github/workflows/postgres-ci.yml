@@ -1,0 +1,81 @@
+name: PostgreSQL Image CI
+
+on:
+  pull_request:
+    paths:
+      - 'postgres18-with-pgbackrest-client/**'
+      - '!postgres18-with-pgbackrest-client/**/*.md'
+      - '.github/workflows/postgres-ci.yml'
+  push:
+    branches: [main, master]
+    paths:
+      - 'postgres18-with-pgbackrest-client/**'
+      - '!postgres18-with-pgbackrest-client/**/*.md'
+      - '.github/workflows/postgres-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    name: Build and verify PostgreSQL 18
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      IMAGE: devops-elf-postgres:ci
+      CONTAINER: devops-elf-postgres-ci
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Build image
+        run: docker build --pull -f postgres18-with-pgbackrest-client/dockerfile -t "$IMAGE" postgres18-with-pgbackrest-client
+      - name: Verify tools and directory ownership
+        run: |
+          docker run --rm "$IMAGE" pgbackrest version
+          docker run --rm "$IMAGE" dpkg-query -W postgresql-18-pgvector
+          docker run --rm "$IMAGE" sh -ec '
+            for directory in /etc/pgbackrest /var/log/pgbackrest /var/spool/pgbackrest; do
+              test "$(stat -c %U:%G "$directory")" = postgres:postgres
+            done
+          '
+      - name: Start disposable database
+        run: |
+          docker run -d --name "$CONTAINER" \
+            -e POSTGRES_PASSWORD=ci-only-password \
+            --health-cmd='pg_isready -h 127.0.0.1 -U postgres -d postgres' \
+            --health-interval=2s --health-timeout=3s --health-retries=30 \
+            "$IMAGE"
+          for attempt in {1..60}; do
+            if [ "$(docker inspect --format '{{.State.Health.Status}}' "$CONTAINER")" = healthy ]; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo 'Database did not become healthy.' >&2
+          exit 1
+      - name: Verify pgvector and SQL queries
+        run: |
+          docker exec -i "$CONTAINER" psql -U postgres -d postgres -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE EXTENSION vector;
+          CREATE TABLE items (id bigserial PRIMARY KEY, embedding vector(3));
+          INSERT INTO items (embedding) VALUES ('[1,2,3]'), ('[4,5,6]');
+          DO $$
+          BEGIN
+            IF (SELECT id FROM items ORDER BY embedding <-> '[3,1,2]' LIMIT 1) <> 1 THEN
+              RAISE EXCEPTION 'Unexpected vector nearest-neighbor result';
+            END IF;
+          END
+          $$;
+          SQL
+      - name: Show database logs on failure
+        if: failure()
+        run: docker logs "$CONTAINER" || true
+      - name: Remove database and anonymous volumes
+        if: always()
+        run: docker rm -f -v "$CONTAINER" || true

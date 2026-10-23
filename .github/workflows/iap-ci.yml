@@ -1,0 +1,63 @@
+name: IAP CI
+
+on:
+  pull_request:
+    paths:
+      - 'google-iap-client-manager/**'
+      - '!google-iap-client-manager/**/*.md'
+      - '.github/workflows/iap-ci.yml'
+  push:
+    branches: [main, master]
+    paths:
+      - 'google-iap-client-manager/**'
+      - '!google-iap-client-manager/**/*.md'
+      - '.github/workflows/iap-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Bash and PowerShell (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    defaults:
+      run:
+        working-directory: google-iap-client-manager
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq zsh
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: |
+          command -v jq >/dev/null || brew install jq
+          command -v pwsh >/dev/null || brew install --cask powershell
+      - name: Install YAML support
+        run: python3 -m pip install 'PyYAML>=6,<7'
+      - name: Verify test prerequisites
+        run: |
+          command -v jq
+          command -v zsh
+          command -v pwsh
+          pwsh -NoProfile -Command 'if ($PSVersionTable.PSVersion -lt [version]"7.2") { exit 1 }'
+      - name: Run test suite
+        run: python3 -m unittest discover -s tests -v

@@ -1,0 +1,84 @@
+name: Lookout CI
+
+on:
+  pull_request:
+    paths:
+      - 'lookout/**'
+      - '!lookout/**/*.md'
+      - '.github/workflows/lookout-ci.yml'
+  push:
+    branches: [main, master]
+    paths:
+      - 'lookout/**'
+      - '!lookout/**/*.md'
+      - '.github/workflows/lookout-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Wizards, plugins, and Ansible
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: lookout
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install Ansible and YAML support
+        run: python3 -m pip install 'ansible-core>=2.19,<2.20' 'PyYAML>=6,<7'
+      - name: Verify test prerequisites
+        run: |
+          command -v pwsh
+          command -v ansible-vault
+          command -v ansible-inventory
+          docker compose version
+      - name: Check version consistency
+        run: python3 scripts/version.py check
+      - name: Run test suite
+        run: python3 -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Check Ansible syntax with a temporary Vault
+        working-directory: lookout/deploy
+        run: |
+          ansible-galaxy collection install -r requirements.yml -p .collections
+          vault_password=$(mktemp)
+          trap 'rm -f "$vault_password" group_vars/all/vault.yml' EXIT
+          printf '%s\n' 'ci-only-vault-password' > "$vault_password"
+          cp group_vars/all/vault.yml.example group_vars/all/vault.yml
+          ansible-vault encrypt --vault-password-file "$vault_password" group_vars/all/vault.yml
+          ansible-playbook site.yml --syntax-check --vault-password-file "$vault_password"
+
+  configuration:
+    name: Configuration (${{ matrix.plugins || 'core' }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        plugins: ['', 'odoo nginx']
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Validate Compose, Alloy, alerts, and dashboards
+        working-directory: lookout
+        env:
+          PLUGINS: ${{ matrix.plugins }}
+        run: |
+          read -r -a plugins <<< "$PLUGINS"
+          bash scripts/check.sh "${plugins[@]}"

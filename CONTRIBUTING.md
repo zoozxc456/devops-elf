@@ -30,6 +30,10 @@ This document defines shared practices. Each project's documentation maintains i
 
 For documentation changes, check links, command examples, and formatting. For code or deployment changes, run the relevant tests and report any skipped checks. Passing configuration checks does not establish that a production deployment has been validated.
 
+## Continuous integration
+
+GitHub Actions runs project checks based on changed paths, plus repository-wide documentation and workflow checks. See the [CI guide](.github/CI.md) for runner coverage, dependencies, manual runs, and branch protection considerations. CI does not replace the platform or operational checks listed in each project guide.
+
 ## Pull requests and versioning
 
 Describe the problem, resulting behavior, validation results, and any platforms or external environments you have not verified. When working in Git, run `git diff --check` and review the diff for sensitive information before committing.
