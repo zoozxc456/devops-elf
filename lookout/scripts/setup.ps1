@@ -91,7 +91,9 @@ function Set-PrivatePath([string]$Path, [bool]$Directory = $false) {
             $rule = [Security.AccessControl.FileSystemAccessRule]::new($user, 'FullControl', 'Allow')
         }
         $acl.AddAccessRule($rule)
-        Set-Acl -LiteralPath $Path -AclObject $acl
+        # Set-Acl also writes the SACL, which needs SeSecurityPrivilege; .NET persists only the owner and DACL set here.
+        $item = if ($Directory) { [IO.DirectoryInfo]::new($Path) } else { [IO.FileInfo]::new($Path) }
+        [IO.FileSystemAclExtensions]::SetAccessControl($item, $acl)
     } else {
         $permissions = if ($Directory) { 'UserRead,UserWrite,UserExecute' } else { 'UserRead,UserWrite' }
         [IO.File]::SetUnixFileMode($Path, [IO.UnixFileMode]$permissions)
