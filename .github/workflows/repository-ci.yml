@@ -27,6 +27,22 @@ jobs:
           python-version: '3.12'
       - run: python3 .github/scripts/check-docs.py
 
+  powershell:
+    name: PowerShell guards
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Reject Set-Acl
+        run: |
+          # Set-Acl also writes the SACL, which fails on Windows without admin rights (SeSecurityPrivilege).
+          if git grep -n -i -E '^[^#]*Set-Acl' -- '*.ps1'; then
+            echo '::error::Use [IO.FileSystemAclExtensions]::SetAccessControl instead of Set-Acl.'
+            exit 1
+          fi
+
   workflows:
     name: Workflow validation
     runs-on: ubuntu-24.04
