@@ -64,3 +64,18 @@ jobs:
           if ($PSVersionTable.PSVersion -lt [version]'7.2') { exit 1 }
       - name: Run test suite
         run: python3 -m unittest discover -s tests -v
+
+  windows:
+    name: PowerShell on Windows (standard-user privileges)
+    runs-on: windows-2025
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: google-iap-client-manager
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Run Windows smoke test
+        run: pwsh -NoProfile -File ./tests/windows_smoke.ps1 -UserPath
