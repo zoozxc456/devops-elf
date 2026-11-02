@@ -16,7 +16,8 @@ function Set-IapPrivateFile([string]$Path) {
         $acl.SetOwner($user)
         $acl.SetAccessRuleProtection($true, $false)
         $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($user, 'FullControl', 'Allow'))
-        Set-Acl -LiteralPath $Path -AclObject $acl
+        # Set-Acl also writes the SACL, which needs SeSecurityPrivilege; .NET persists only the owner and DACL set here.
+        [IO.FileSystemAclExtensions]::SetAccessControl([IO.FileInfo]::new($Path), $acl)
     } else {
         [IO.File]::SetUnixFileMode($Path, [IO.UnixFileMode]'UserRead,UserWrite')
     }

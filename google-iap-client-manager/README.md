@@ -258,7 +258,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development, test coverage, and relea
 python3 -m unittest discover -s tests -v
 ```
 
-Tests use temporary configuration and substitute gcloud commands, without connecting to Google Cloud or modifying personal configuration. PowerShell tests require `pwsh` on PATH and are skipped when unavailable. Verify Windows ACL branches on Windows.
+Tests use temporary configuration and substitute gcloud commands, without connecting to Google Cloud or modifying personal configuration. PowerShell tests require `pwsh` on PATH and are skipped when unavailable. Verify Windows ACL branches on Windows with `pwsh -NoProfile -File .\tests\windows_smoke.ps1`: it drops admin-only file-security privileges, installs into a temporary directory, and checks private-file ACLs. CI runs it on Windows.
 
 ## License
 

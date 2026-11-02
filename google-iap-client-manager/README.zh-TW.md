@@ -256,7 +256,7 @@ source ~/.local/bin/.iap/completions/iap.bash   # 加到 ~/.bashrc 或 ~/.zshrc
 python3 -m unittest discover -s tests -v
 ```
 
-測試使用暫存設定與假的 gcloud，不會連線 Google Cloud 或改動個人設定。PowerShell 測試需要 PATH 中有 `pwsh`，未安裝時會跳過；Windows ACL 分支須在 Windows 執行驗證。
+測試使用暫存設定與假的 gcloud，不會連線 Google Cloud 或改動個人設定。PowerShell 測試需要 PATH 中有 `pwsh`，未安裝時會跳過；Windows ACL 分支可在 Windows 執行 `pwsh -NoProfile -File .\tests\windows_smoke.ps1` 驗證：先移除管理員專屬的檔案安全性權限，再安裝到暫存目錄並檢查私有檔案 ACL。CI 也會在 Windows 執行。
 
 ## 授權
 
