@@ -7,6 +7,7 @@
 
 
 ### Added
+- 背景 tunnel：`iap up <name>...`、`iap ps`、`iap down <name>|--all`、`iap logs <name> [-f]`（Bash / PowerShell），一個 console 可開多條、斷線自動重連、port 衝突與啟動失敗會回報且不留行程；fzf 選單支援 Tab 多選，PowerShell 選單支援逗號多選
 - 完整的專案使用文件、`CONTRIBUTING.md` 貢獻指南、`SECURITY.md` 安全政策與 MIT `LICENSE`
 - `iap export [FILE]`：Bash / PowerShell 匯出目前設定，支援指定輸出、原始格式保留、私有權限與覆寫前確認／備份
 - `iap help` 與 `--help` / `-h` 顯示相同說明，並加入補全與保留名稱

@@ -95,6 +95,9 @@ iap new [-Config PATH]            新增一組連線，保留既有設定
 iap edit <name> / remove <name>    修改／移除指定連線
 iap reset / uninstall             清空連線／解除安裝（先確認）
 iap ls / names / show <name>      列表／名稱／入口
+iap up <name>...                  在背景開 tunnel（斷線自動重連），console 可以繼續用
+iap ps / logs <name> [-f]         列出背景 tunnel／看 gcloud 輸出
+iap down <name>... / down --all   關閉背景 tunnel
 iap edit / version / update       編輯／版本／更新
 PowerShell 7.2+；原生支援純文字、JSON、JSON 語法的 YAML。
 一般 YAML 另需 mikefarah yq。import / to-yaml 請使用 Bash 版。
@@ -141,6 +144,151 @@ if ($command -in @('update','self-update')) {
     return
 }
 if ($command -in @('import','to-yaml')) { throw '此指令請使用 Bash 版 iap。' }
+# ---------- background tunnels：每條一個 <name>.pid（pid lport rport instance）與 <name>.log ----------
+$stateDir = if ($env:XDG_STATE_HOME) { Join-Path $env:XDG_STATE_HOME 'iap' }
+            elseif ($IsWindows) { Join-Path $env:LOCALAPPDATA 'iap' }
+            else { Join-Path $HOME '.local/state/iap' }
+function Test-IapStateName([string]$Name) { $Name -cmatch '^[A-Za-z0-9_][A-Za-z0-9._-]*$' }
+function Read-IapLog([string]$Path) {
+    # 背景行程還開著檔案寫入，要用 ReadWrite 共用模式才讀得到
+    $stream = [IO.FileStream]::new($Path, 'Open', 'Read', 'ReadWrite, Delete')
+    try { [IO.StreamReader]::new($stream).ReadToEnd() } finally { $stream.Dispose() }
+}
+# 回傳仍在執行的背景 tunnel；pid 檔殘留（行程不在或 pid 被重用）就刪掉
+function Get-IapTunnelProcess([string]$Name) {
+    if (-not (Test-IapStateName $Name)) { return $null }
+    $file = Join-Path $stateDir "$Name.pid"
+    if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { return $null }
+    $fields = @(([IO.File]::ReadAllText($file)).Trim() -split '\s+')
+    $process = $null
+    if ($fields.Count -ge 4 -and $fields[0] -match '^\d+$') {
+        $process = Get-Process -Id ([int]$fields[0]) -ErrorAction SilentlyContinue
+    }
+    if ($process -and $process.ProcessName -like 'pwsh*') {
+        return [pscustomobject]@{ Name = $Name; Process = $process; LocalPort = $fields[1]; RemotePort = $fields[2]; Instance = $fields[3] }
+    }
+    Remove-Item -LiteralPath $file -Force
+    return $null
+}
+function Get-IapTunnelNames {
+    if (-not (Test-Path -LiteralPath $stateDir -PathType Container)) { return @() }
+    @(Get-ChildItem -LiteralPath $stateDir -Filter '*.pid' -File | ForEach-Object BaseName)
+}
+if ($command -eq 'ps') {
+    $rows = @(foreach ($name in Get-IapTunnelNames) {
+        $tunnel = Get-IapTunnelProcess $name
+        if ($tunnel) {
+            [pscustomobject]@{
+                Name = $name; PID = $tunnel.Process.Id
+                Local = "localhost:$($tunnel.LocalPort)"; Remote = "$($tunnel.Instance):$($tunnel.RemotePort)"
+                Uptime = ((Get-Date) - $tunnel.Process.StartTime).ToString('hh\:mm\:ss')
+            }
+        }
+    })
+    if ($rows.Count) { $rows | Format-Table -AutoSize } else { '沒有背景 tunnel' }
+    return
+}
+if ($command -eq 'down') {
+    $names = @($arguments | Select-Object -Skip 1)
+    $all = $names.Count -eq 1 -and $names[0] -in @('--all','-All')
+    if ($all) { $names = @(Get-IapTunnelNames) }
+    elseif (-not $names.Count) { throw '用法：iap down <name>... 或 iap down --all' }
+    $failed = @()
+    foreach ($name in $names) {
+        $tunnel = Get-IapTunnelProcess ([string]$name)
+        if (-not $tunnel) { if (-not $all) { $failed += $name }; continue }
+        try { $tunnel.Process.Kill($true) } catch { }
+        [void]$tunnel.Process.WaitForExit(5000)
+        Remove-Item -LiteralPath (Join-Path $stateDir "$name.pid") -Force -ErrorAction SilentlyContinue
+        Write-Host "✔ [$name] 已關閉"
+    }
+    if (-not $names.Count) { '沒有背景 tunnel' }
+    if ($failed.Count) { throw "沒有在背景執行：$($failed -join ' ')" }
+    return
+}
+if ($command -eq 'logs') {
+    $name = if ($arguments.Count -ge 2) { [string]$arguments[1] } else { '' }
+    $log = Join-Path $stateDir "$name.log"
+    if (-not (Test-IapStateName $name) -or -not (Test-Path -LiteralPath $log -PathType Leaf)) {
+        throw "沒有 $name 的背景 tunnel 紀錄（iap ps 看清單）"
+    }
+    $follow = @($arguments | Select-Object -Skip 2) | Where-Object { $_ -in @('-f','-Wait','--follow') }
+    if ($follow) { Get-Content -LiteralPath $log -Tail 50 -Wait } else { Get-Content -LiteralPath $log -Tail 50 }
+    return
+}
+function Show-Endpoints($Entry) {
+    foreach ($endpoint in $Entry.Endpoints) {
+        Write-Host ('  ' + ([string]$endpoint).Replace('{port}', [string]$Entry.LocalPort).Replace('{rport}', [string]$Entry.RemotePort))
+    }
+}
+function Get-IapFlags($Entry) {
+    $flags = @()
+    if ($Entry.Project -and $Entry.Project -ne '-') { $flags += @('--project', [string]$Entry.Project) }
+    if ($Entry.Zone -and $Entry.Zone -ne '-') { $flags += @('--zone', [string]$Entry.Zone) }
+    $flags
+}
+function Assert-IapTunnelPorts($Entry) {
+    foreach ($port in @($Entry.RemotePort, $Entry.LocalPort)) {
+        if ([string]$port -notmatch '^[1-9][0-9]{0,4}$' -or [int]$port -gt 65535) { throw 'Tunnel port 必須為 1–65535。' }
+    }
+}
+function Test-IapPortBusy([int]$Port) {
+    $client = [Net.Sockets.TcpClient]::new()
+    try { return $client.ConnectAsync('127.0.0.1', $Port).Wait(500) } catch { return $false } finally { $client.Dispose() }
+}
+function Start-IapTunnel($Entry) {
+    $name = [string]$Entry.Name
+    if ($Entry.Type -cne 'tunnel') { Write-Host "iap: $name 是 $($Entry.Type)，背景模式只支援 tunnel（ssh 請用 iap $name）"; return $false }
+    if (-not (Test-IapStateName $name)) { Write-Host "iap: 背景模式的名稱只能用英數字與 . _ -：$name"; return $false }
+    Assert-IapTunnelPorts $Entry
+    $existing = Get-IapTunnelProcess $name
+    if ($existing) { Write-Host "• [$name] 已在背景執行（PID $($existing.Process.Id)）  localhost:$($Entry.LocalPort)"; return $true }
+    if (Test-IapPortBusy ([int]$Entry.LocalPort)) { Write-Host "iap: [$name] localhost:$($Entry.LocalPort) 已被佔用"; return $false }
+    [void][IO.Directory]::CreateDirectory($stateDir)
+    $log = Join-Path $stateDir "$name.log"
+    $pidFile = Join-Path $stateDir "$name.pid"
+    Write-IapPrivateFile $log ''
+    $gcloudArgs = @('compute', 'start-iap-tunnel', [string]$Entry.Instance, [string]$Entry.RemotePort,
+                    "--local-host-port=localhost:$($Entry.LocalPort)") + @(Get-IapFlags $Entry)
+    # 參數用 JSON 帶進 -EncodedCommand，不經過命令列拼接；斷線 3 秒後自動重連
+    $payload = (@{ Log = $log; Args = $gcloudArgs } | ConvertTo-Json -Compress).Replace("'", "''")
+    $loop = @"
+`$p = '$payload' | ConvertFrom-Json
+while (`$true) {
+    & gcloud @(`$p.Args) *>> `$p.Log
+    "[iap] tunnel 結束（exit `$LASTEXITCODE），3 秒後重連…" | Out-File -Append -LiteralPath `$p.Log
+    Start-Sleep -Seconds 3
+}
+"@
+    $pwshArgs = @('-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand',
+                  [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($loop)))
+    $pwsh = (Get-Process -Id $PID).Path
+    $process = if ($IsWindows) {
+        Start-Process -FilePath $pwsh -ArgumentList $pwshArgs -WindowStyle Hidden -PassThru
+    } else {
+        # nohup：關掉終端機也不會跟著結束
+        Start-Process -FilePath 'nohup' -ArgumentList (@($pwsh) + $pwshArgs) -RedirectStandardOutput '/dev/null' -PassThru
+    }
+    Write-IapPrivateFile $pidFile "$($process.Id) $($Entry.LocalPort) $($Entry.RemotePort) $($Entry.Instance)"
+    Write-Host "→ [$name] localhost:$($Entry.LocalPort) ⇢ $($Entry.Instance):$($Entry.RemotePort)  背景連線中…"
+    $timeout = if ($env:IAP_UP_TIMEOUT) { [int]$env:IAP_UP_TIMEOUT } else { 30 }
+    $deadline = (Get-Date).AddSeconds($timeout)
+    while ((Get-Date) -lt $deadline) {
+        $text = Read-IapLog $log
+        if ($text -like '*Listening on port*') {
+            Write-Host "✔ [$name] 已連線（背景 PID $($process.Id)）  localhost:$($Entry.LocalPort) ⇢ $($Entry.Instance):$($Entry.RemotePort)"
+            Show-Endpoints $Entry
+            return $true
+        }
+        if ($text -match '(?m)^\[iap\] tunnel 結束' -or $process.HasExited) { break }
+        Start-Sleep -Milliseconds 200
+    }
+    try { $process.Kill($true) } catch { }
+    Remove-Item -LiteralPath $pidFile -Force -ErrorAction SilentlyContinue
+    Write-Host "iap: [$name] tunnel 沒有建立，gcloud 輸出："
+    (Read-IapLog $log) -split '\r?\n' | Select-Object -Last 20 | ForEach-Object { Write-Host $_ }
+    return $false
+}
 $config = Get-IapConfigPath
 if (-not (Test-Path -LiteralPath $config -PathType Leaf)) { throw "找不到設定檔：${config}，請先執行 iap setup。" }
 if ($command -eq 'edit') {
@@ -191,6 +339,18 @@ if ([IO.Path]::GetExtension($config) -in @('.json','.yaml','.yml')) {
     }
 }
 if ($command -eq 'names') { $entries | ForEach-Object Name; return }
+if ($command -eq 'up') {
+    $names = @($arguments | Select-Object -Skip 1)
+    if (-not $names.Count) { throw '用法：iap up <name>...' }
+    $ok = $true
+    foreach ($name in $names) {
+        $found = @($entries | Where-Object { $_.Name -ceq [string]$name })
+        if ($found.Count -ne 1) { Write-Host "iap: 找不到唯一連線：$name（iap ls 看清單）"; $ok = $false; continue }
+        if (-not (Start-IapTunnel $found[0])) { $ok = $false }
+    }
+    if (-not $ok) { exit 1 }
+    return
+}
 if ($command -in @('ls','list')) {
     $entries | Format-Table Name,Type,Project,Zone,Instance,RemotePort,LocalPort -AutoSize
     return
@@ -198,9 +358,17 @@ if ($command -in @('ls','list')) {
 if ($command -eq '') {
     if (-not $entries.Count) { throw '設定檔是空的，請執行 iap setup。' }
     for ($index = 0; $index -lt $entries.Count; $index++) { Write-Host "$($index + 1). $($entries[$index].Name) [$($entries[$index].Type)]" }
-    do { $choice = Read-Host '選哪台？'; $number = 0 }
-    until ([int]::TryParse($choice, [ref]$number) -and $number -ge 1 -and $number -le $entries.Count)
-    $selected = $entries[$number - 1]
+    do {
+        $choice = Read-Host '選哪台？（多選用逗號分隔，會在背景開 tunnel）'
+        $numbers = @(([string]$choice).Trim() -split '[,\s]+' | ForEach-Object { $number = 0; if ([int]::TryParse($_, [ref]$number)) { $number } else { -1 } })
+    } until ($numbers.Count -and -not ($numbers | Where-Object { $_ -lt 1 -or $_ -gt $entries.Count }))
+    if ($numbers.Count -gt 1) {
+        $ok = $true
+        foreach ($number in $numbers) { if (-not (Start-IapTunnel $entries[$number - 1])) { $ok = $false } }
+        if (-not $ok) { exit 1 }
+        return
+    }
+    $selected = $entries[$numbers[0] - 1]
     $extra = @()
 } else {
     $name = if ($command -eq 'show') {
@@ -212,15 +380,8 @@ if ($command -eq '') {
     $selected = $found[0]
     $extra = @($arguments | Select-Object -Skip 1)
 }
-function Show-Endpoints($Entry) {
-    foreach ($endpoint in $Entry.Endpoints) {
-        Write-Host ('  ' + ([string]$endpoint).Replace('{port}', [string]$Entry.LocalPort).Replace('{rport}', [string]$Entry.RemotePort))
-    }
-}
 if ($command -eq 'show') { Show-Endpoints $selected; return }
-$flags = @()
-if ($selected.Project -and $selected.Project -ne '-') { $flags += @('--project', [string]$selected.Project) }
-if ($selected.Zone -and $selected.Zone -ne '-') { $flags += @('--zone', [string]$selected.Zone) }
+$flags = @(Get-IapFlags $selected)
 switch -CaseSensitive ($selected.Type) {
     'ssh' {
         Write-Host "→ [$($selected.Name)] ssh $($selected.Instance) via IAP"
@@ -228,9 +389,7 @@ switch -CaseSensitive ($selected.Type) {
         & gcloud compute ssh $selected.Instance @flags --tunnel-through-iap @extra
     }
     'tunnel' {
-        foreach ($port in @($selected.RemotePort, $selected.LocalPort)) {
-            if ([string]$port -notmatch '^[1-9][0-9]{0,4}$' -or [int]$port -gt 65535) { throw 'Tunnel port 必須為 1–65535。' }
-        }
+        Assert-IapTunnelPorts $selected
         Write-Host "→ [$($selected.Name)] localhost:$($selected.LocalPort) ⇢ $($selected.Instance):$($selected.RemotePort)"
         if ($selected.Endpoints.Count) {
             Write-Host '  連線入口（tunnel 建立後可用）：'
