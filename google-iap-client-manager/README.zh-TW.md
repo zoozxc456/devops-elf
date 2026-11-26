@@ -246,9 +246,20 @@ YAML / JSON 的最外層使用 `hosts` 物件，可加上 `defaults.project` / `
 
 ## Tab 補全
 
+可補全指令（`up`、`ps`、`down`、`logs` 等）與連線名稱。bash 加到 `~/.bashrc`：
+
 ```bash
-source ~/.local/bin/.iap/completions/iap.bash   # 加到 ~/.bashrc 或 ~/.zshrc
+source ~/.local/bin/.iap/completions/iap.bash
 ```
+
+zsh 加到 `~/.zshrc`（需靠 `bashcompinit` 載入此 Bash 腳本；若尚未啟用 `compinit` 也一併啟用）：
+
+```zsh
+autoload -U compinit bashcompinit && compinit -u && bashcompinit
+source ~/.local/bin/.iap/completions/iap.bash
+```
+
+加完後開新終端機，或執行 `source ~/.zshrc`。
 
 ## 常見問題
 
