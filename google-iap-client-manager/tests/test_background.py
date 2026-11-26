@@ -1,3 +1,4 @@
+import faulthandler
 import os
 from pathlib import Path
 import shutil
@@ -30,6 +31,9 @@ def free_port():
 @unittest.skipIf(os.name == 'nt', 'Unix executable stub')
 class BackgroundTunnelBase:
     def setUp(self):
+        # A hung test dumps every thread's stack and exits instead of stalling CI until the job timeout
+        faulthandler.dump_traceback_later(120, exit=True)
+        self.addCleanup(faulthandler.cancel_dump_traceback_later)
         self.temp = tempfile.TemporaryDirectory(prefix='iap bg ')
         self.addCleanup(self.temp.cleanup)
         self.home = Path(self.temp.name)
