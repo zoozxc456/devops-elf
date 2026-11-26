@@ -63,7 +63,21 @@ jobs:
         run: |
           if ($PSVersionTable.PSVersion -lt [version]'7.2') { exit 1 }
       - name: Run test suite
-        run: python3 -m unittest discover -s tests -v
+        # Diagnostics for a hang seen only in CI: report how unittest ended and
+        # which processes are left, so a stuck step shows its cause.
+        run: |
+          python3 -m unittest discover -s tests -v </dev/null &
+          tests=$!
+          ( sleep 300 >/dev/null 2>&1; echo "::error::tests still running after 5 minutes"
+            ps -A -o pid,ppid,pgid,stat,etime,command; kill -9 "$tests" ) &
+          watchdog=$!
+          rc=0; wait "$tests" || rc=$?
+          kill "$watchdog" 2>/dev/null || true
+          echo "unittest exit code: $rc"
+          left=$(pgrep -d, -f 'pwsh|gcloud|python|nohup|iap' || true)
+          if [ -n "$left" ]; then ps -o pid,ppid,pgid,stat,etime,command -p "$left"; fi
+          pkill -f -- '-EncodedCommand' || true
+          exit "$rc"
 
   windows:
     name: PowerShell on Windows (standard-user privileges)
