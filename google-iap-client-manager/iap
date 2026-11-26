@@ -12,6 +12,11 @@
 #   iap reset           確認後清空目前設定的連線，保留 defaults
 #   iap uninstall       確認後移除本版本的安裝，保留連線設定
 #   iap show <name>     只列出這台的入口，不連線
+#   iap up <name>...    在背景開 tunnel（斷線自動重連），console 可以繼續用
+#   iap ps              列出背景 tunnel
+#   iap down <name>...  關閉背景 tunnel（--all 全部關）
+#   iap logs <name> [-f]  看背景 tunnel 的 gcloud 輸出
+#   （互動選單有 fzf 時可用 Tab 多選，選多條就全部在背景開）
 #   iap ls              列出所有主機
 #   iap edit            編輯設定檔
 #   iap import          從 shell history 撈出 gcloud ssh / start-iap-tunnel 指令，轉成設定行
@@ -215,6 +220,110 @@ connect() {
   esac
 }
 
+# ---------- background tunnels ----------
+# 每條背景 tunnel 一個 <name>.pid（內容：pid lport rport instance）與 <name>.log
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/iap"
+
+# 印出仍在執行的 pid；pid 檔殘留（行程不在或 pid 被別的程式重用）就順手刪掉
+running_pid() {
+  # 名稱會變成檔名，擋掉 ../ 之類
+  [[ "$1" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]] || return 1
+  local f="$STATE_DIR/$1.pid" pid
+  [[ -f "$f" ]] || return 1
+  read -r pid _ <"$f" || true
+  if [[ "$pid" =~ ^[0-9]+$ ]] && ps -p "$pid" -o command= 2>/dev/null | grep -q 'iap-up'; then
+    echo "$pid"; return 0
+  fi
+  rm -f "$f"; return 1
+}
+
+port_busy() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
+
+tunnel_up() {
+  local line="$1" name type project zone instance rport lport pid
+  read -r name type project zone instance rport lport <<<"$line"
+  [[ "$type" == tunnel ]] || { echo "iap: $name 是 ${type}，背景模式只支援 tunnel（ssh 請用 iap ${name}）" >&2; return 1; }
+  [[ -n "${rport:-}" ]] || { echo "iap: $name 是 tunnel 但沒有 remote_port" >&2; return 1; }
+  lport="${lport:-$rport}"
+  [[ "$name" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]] || { echo "iap: 背景模式的名稱只能用英數字與 . _ -：$name" >&2; return 1; }
+  if pid=$(running_pid "$name"); then
+    echo "• [$name] 已在背景執行（PID ${pid}）  localhost:$lport"; return 0
+  fi
+  if port_busy "$lport"; then echo "iap: [$name] localhost:$lport 已被佔用" >&2; return 1; fi
+
+  local -a flags=()
+  [[ -n "$project" && "$project" != "-" ]] && flags+=(--project "$project")
+  [[ -n "$zone"    && "$zone"    != "-" ]] && flags+=(--zone "$zone")
+
+  local log="$STATE_DIR/$name.log" pidf="$STATE_DIR/$name.pid"
+  (umask 077; mkdir -p "$STATE_DIR"; : >"$log")
+  # 斷線自動重連；gcloud 放背景再 wait，TERM 才能立刻殺掉它
+  nohup bash -c '
+    trap '\''kill "$c" 2>/dev/null; exit 0'\'' TERM
+    while :; do
+      "$@" & c=$!; wait "$c"; rc=$?
+      echo "[iap] tunnel 結束（exit ${rc}），3 秒後重連…"
+      sleep 3 & c=$!; wait "$c"
+    done' iap-up gcloud compute start-iap-tunnel "$instance" "$rport" \
+      --local-host-port="localhost:$lport" ${flags[@]+"${flags[@]}"} \
+      >>"$log" 2>&1 </dev/null &
+  pid=$!
+  (umask 077; echo "$pid $lport $rport $instance" >"$pidf")
+
+  echo "→ [$name] localhost:$lport  ⇢  $instance:$rport  背景連線中…" >&2
+  local i timeout=$(( ${IAP_UP_TIMEOUT:-30} * 5 ))
+  for (( i = 0; i < timeout; i++ )); do
+    if grep -q 'Listening on port' "$log"; then
+      echo "✔ [$name] 已連線（背景 PID ${pid}）  localhost:$lport  ⇢  $instance:$rport"
+      show_endpoints "$name" "$lport" "$rport"
+      return 0
+    fi
+    grep -q '^\[iap\] tunnel 結束' "$log" && break
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.2
+  done
+  kill "$pid" 2>/dev/null || true
+  rm -f "$pidf"
+  echo "iap: [$name] tunnel 沒有建立，gcloud 輸出：" >&2
+  tail -n 20 "$log" >&2
+  return 1
+}
+
+tunnel_ps() {
+  local f name pid lport rport instance rows=""
+  for f in "$STATE_DIR"/*.pid; do
+    [[ -f "$f" ]] || continue
+    name=$(basename "$f" .pid)
+    running_pid "$name" >/dev/null || continue
+    read -r pid lport rport instance <"$f"
+    rows+="$name $pid localhost:$lport $instance:$rport $(ps -p "$pid" -o etime= | tr -d ' ')"$'\n'
+  done
+  [[ -n "$rows" ]] || { echo "沒有背景 tunnel"; return 0; }
+  printf 'NAME PID LOCAL REMOTE UPTIME\n%s' "$rows" | tab
+}
+
+tunnel_down() {
+  local -a names=() failed=()
+  local name pid f i
+  if [[ "${1:-}" == --all ]]; then
+    for f in "$STATE_DIR"/*.pid; do [[ -f "$f" ]] && names+=("$(basename "$f" .pid)"); done
+  else
+    names=("$@")
+  fi
+  (( ${#names[@]} )) || { [[ "${1:-}" == --all ]] && { echo "沒有背景 tunnel"; return 0; }; die "用法：iap down <name>... 或 iap down --all"; }
+  for name in "${names[@]}"; do
+    if ! pid=$(running_pid "$name"); then
+      [[ "${1:-}" == --all ]] || failed+=("$name")
+      continue
+    fi
+    kill "$pid" 2>/dev/null || true
+    for (( i = 0; i < 25; i++ )); do kill -0 "$pid" 2>/dev/null || break; sleep 0.2; done
+    rm -f "$STATE_DIR/$name.pid"
+    echo "✔ [$name] 已關閉"
+  done
+  (( ${#failed[@]} == 0 )) || die "沒有在背景執行：${failed[*]}"
+}
+
 find_by_name() {
   entries | awk -v n="$1" '$1==n {print; found=1; exit} END {exit !found}'
 }
@@ -228,10 +337,10 @@ pick() {
   if command -v fzf >/dev/null 2>&1; then
     local sel
     sel=$(printf '%s\n' "${lines[@]}" | tab \
-          | fzf --height=40% --reverse --prompt='IAP> ' \
-                --header='NAME  TYPE  PROJECT  ZONE  INSTANCE  R_PORT  L_PORT' \
+          | fzf --multi --height=40% --reverse --prompt='IAP> ' \
+                --header='Tab 多選＝背景開啟 tunnel  |  NAME  TYPE  PROJECT  ZONE  INSTANCE  R_PORT  L_PORT' \
                 --preview="$0 show {1}" --preview-window=down,30%) || exit 0
-    find_by_name "$(awk '{print $1}' <<<"$sel")"
+    local n; while read -r n _; do find_by_name "$n"; done <<<"$sel"
   else
     local PS3='選哪台？ ' opt
     select opt in "${lines[@]}"; do
@@ -419,6 +528,12 @@ case "${1:-}" in
     fi
     exec bash "$root/scripts/setup.sh" "$@" ;;
   version|-v|--version) show_version; exit ;;
+  ps)                   tunnel_ps; exit ;;
+  down)                 shift; tunnel_down "$@"; exit ;;
+  logs)
+    [[ "${2:-}" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ && -f "$STATE_DIR/${2:-}.log" ]] \
+      || die "沒有 ${2:-<name>} 的背景 tunnel 紀錄（iap ps 看清單）"
+    exec tail -n 50 "${@:3}" "$STATE_DIR/$2.log" ;;
   update|self-update)   self_update; exit ;;
   help|-h|--help)       awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$(self_path)"; exit ;;
 esac
@@ -427,7 +542,20 @@ ensure_conf
 load_conf
 
 case "${1:-}" in
-  "")            connect "$(pick)" ;;
+  "")
+    sel=$(pick)
+    if [[ $(wc -l <<<"$sel") -gt 1 ]]; then
+      rc=0; while IFS= read -r l; do tunnel_up "$l" || rc=1; done <<<"$sel"; exit "$rc"
+    fi
+    connect "$sel" ;;
+  up)
+    shift; (( $# )) || die "用法：iap up <name>..."
+    rc=0
+    for name in "$@"; do
+      if line=$(find_by_name "$name"); then tunnel_up "$line" || rc=1
+      else echo "iap: 找不到 ${name}（iap ls 看清單）" >&2; rc=1; fi
+    done
+    exit "$rc" ;;
   ls|list)       list ;;
   edit)          exec "${EDITOR:-vi}" "$CONF" ;;
   import)        import_history ;;

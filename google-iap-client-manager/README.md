@@ -162,6 +162,19 @@ The client shares Bash's configuration search order, `IAP_CONF`, `XDG_CONFIG_HOM
 
 PowerShell supports numeric menus, direct SSH/tunnel connections, and the management commands below. `import`, `to-yaml`, and fzf menus are currently Bash-only. On macOS / Linux with both implementations installed, use `iap.ps1` to explicitly select PowerShell.
 
+## Background tunnels
+
+Run several tunnels from one console without keeping it busy:
+
+```bash
+iap up app-web app-db   # Start in the background; returns once gcloud is listening.
+iap ps                  # List running background tunnels.
+iap logs app-db -f      # Follow gcloud output.
+iap down app-web        # Stop one; `iap down --all` stops all.
+```
+
+In the fzf menu, press Tab to select several tunnels; selecting more than one starts them all in the background. The PowerShell menu accepts comma-separated numbers. Background tunnels reconnect 3 seconds after gcloud exits and keep running after the console closes. `up` fails without leaving a process behind when the local port is taken or gcloud does not reach `Listening on port` within `IAP_UP_TIMEOUT` seconds (default 30). PID and log files live in `${XDG_STATE_HOME:-~/.local/state}/iap` (Windows: `%LOCALAPPDATA%\iap`). Only `tunnel` connections run in the background; `ssh` stays interactive.
+
 ## Managing connections and uninstalling
 
 Export the currently selected configuration, chosen through `IAP_CONF` or the default search order:
@@ -203,6 +216,9 @@ Edits, removals, and resets create sibling `.backup-*` files with `0600` permiss
 | `iap <name> [-- ssh arguments]` | Connect directly |
 | `iap show <name>` | Display endpoints without connecting |
 | `iap ls` | List hosts |
+| `iap up <name>...` | Start tunnels in the background, reconnecting on drop |
+| `iap ps` / `iap logs <name> [-f]` | List background tunnels / show their gcloud output |
+| `iap down <name>...` / `iap down --all` | Stop background tunnels |
 | `iap edit [name]` | Edit the entire configuration or one connection |
 | `iap remove <name>` | Confirm, back up, and remove one connection |
 | `iap reset` | Confirm, back up, and clear all connections in the selected configuration |

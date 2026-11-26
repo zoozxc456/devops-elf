@@ -160,6 +160,19 @@ iap app-web
 
 PowerShell 版支援數字選單、直接 SSH / tunnel，以及下表的管理指令。`import`、`to-yaml` 及 fzf 選單目前仍由 Bash 版提供。macOS / Linux 若同時安裝兩版，可使用 `iap.ps1` 明確選擇 PowerShell 版。
 
+## 背景 tunnel
+
+一個 console 開多條 tunnel，而且不佔住 console：
+
+```bash
+iap up app-web app-db   # 在背景開啟，等 gcloud 開始 listening 才回來
+iap ps                  # 列出背景 tunnel
+iap logs app-db -f      # 追 gcloud 輸出
+iap down app-web        # 關一條；iap down --all 全部關
+```
+
+fzf 選單可用 Tab 多選，選超過一條就全部在背景開；PowerShell 選單可輸入逗號分隔的數字。背景 tunnel 在 gcloud 結束 3 秒後自動重連，關掉 console 也會繼續跑。本機 port 被佔用，或 `IAP_UP_TIMEOUT` 秒（預設 30）內 gcloud 沒出現 `Listening on port` 時，`up` 會失敗且不留下行程。PID 與 log 放在 `${XDG_STATE_HOME:-~/.local/state}/iap`（Windows：`%LOCALAPPDATA%\iap`）。只有 `tunnel` 類型可以背景執行，`ssh` 維持互動。
+
 ## 管理連線與解除安裝
 
 匯出目前選用的設定（依 `IAP_CONF` 或預設搜尋順序）：
@@ -201,6 +214,9 @@ iap uninstall           # 移除目前這個 shell 版本的安裝，保留設�
 | `iap <name> [-- ssh 參數]` | 直接連線 |
 | `iap show <name>` | 只看入口，不連線 |
 | `iap ls` | 列出主機 |
+| `iap up <name>...` | 在背景開 tunnel，斷線自動重連 |
+| `iap ps` / `iap logs <name> [-f]` | 列出背景 tunnel／看 gcloud 輸出 |
+| `iap down <name>...` / `iap down --all` | 關閉背景 tunnel |
 | `iap edit [name]` | 編輯整份設定／只編輯指定連線 |
 | `iap remove <name>` | 確認並備份後移除指定連線 |
 | `iap reset` | 確認並備份後清空目前設定的全部連線 |
