@@ -171,7 +171,7 @@ iap logs app-db -f      # 追 gcloud 輸出
 iap down app-web        # 關一條；iap down --all 全部關
 ```
 
-fzf 選單可用 Tab 多選，選超過一條就全部在背景開；PowerShell 選單可輸入逗號分隔的數字。背景 tunnel 在 gcloud 結束 3 秒後自動重連，關掉 console 也會繼續跑。本機 port 被佔用，或 `IAP_UP_TIMEOUT` 秒（預設 30）內 gcloud 沒出現 `Listening on port` 時，`up` 會失敗且不留下行程。PID 與 log 放在 `${XDG_STATE_HOME:-~/.local/state}/iap`（Windows：`%LOCALAPPDATA%\iap`）。只有 `tunnel` 類型可以背景執行，`ssh` 維持互動。
+fzf 選單可用 Tab 多選，選超過一條就全部在背景開；PowerShell 選單可輸入逗號分隔的數字。背景 tunnel 在 gcloud 結束 3 秒後自動重連，關掉 console 也會繼續跑。本機 port 被佔用，或 `IAP_UP_TIMEOUT` 秒（預設 30）內本機 port 沒開始接受連線時，`up` 會失敗且不留下行程；等待中按 Ctrl-C 也一樣會取消。gcloud 的啟動連線測試在輸出不是終端機時會卡住，所以背景模式會加上 `--iap-tunnel-disable-connection-check`；IAP 權限錯誤因此會在第一次連線時才出現，可用 `iap logs <name>` 查看。PID 與 log 放在 `${XDG_STATE_HOME:-~/.local/state}/iap`（Windows：`%LOCALAPPDATA%\iap`）。只有 `tunnel` 類型可以背景執行，`ssh` 維持互動。
 
 ## 管理連線與解除安裝
 

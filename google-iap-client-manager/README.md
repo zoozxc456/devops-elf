@@ -173,7 +173,7 @@ iap logs app-db -f      # Follow gcloud output.
 iap down app-web        # Stop one; `iap down --all` stops all.
 ```
 
-In the fzf menu, press Tab to select several tunnels; selecting more than one starts them all in the background. The PowerShell menu accepts comma-separated numbers. Background tunnels reconnect 3 seconds after gcloud exits and keep running after the console closes. `up` fails without leaving a process behind when the local port is taken or gcloud does not reach `Listening on port` within `IAP_UP_TIMEOUT` seconds (default 30). PID and log files live in `${XDG_STATE_HOME:-~/.local/state}/iap` (Windows: `%LOCALAPPDATA%\iap`). Only `tunnel` connections run in the background; `ssh` stays interactive.
+In the fzf menu, press Tab to select several tunnels; selecting more than one starts them all in the background. The PowerShell menu accepts comma-separated numbers. Background tunnels reconnect 3 seconds after gcloud exits and keep running after the console closes. `up` fails without leaving a process behind when the local port is taken or does not start accepting connections within `IAP_UP_TIMEOUT` seconds (default 30); Ctrl-C while waiting cancels it the same way. Background mode passes `--iap-tunnel-disable-connection-check`, because gcloud's startup check hangs when its output is not a terminal; IAP permission errors therefore show up on the first connection, in `iap logs <name>`. PID and log files live in `${XDG_STATE_HOME:-~/.local/state}/iap` (Windows: `%LOCALAPPDATA%\iap`). Only `tunnel` connections run in the background; `ssh` stays interactive.
 
 ## Managing connections and uninstalling
 

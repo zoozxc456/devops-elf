@@ -1,14 +1,23 @@
 import os
 from pathlib import Path
 import shutil
+import signal
 import socket
 import subprocess
 import tempfile
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 PWSH = shutil.which('pwsh')
-LISTENING = '#!/bin/sh\necho "Listening on port [$5]." >&2\nexec sleep 30\n'
+# Binds the --local-host-port like the real gcloud; readiness is detected by the port.
+LISTENING = r'''#!/bin/sh
+echo "args: $*"
+for a; do case $a in --local-host-port=*) port=${a##*:} ;; esac; done
+exec python3 -c 'import socket, sys, time
+s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", int(sys.argv[1]))); s.listen(); time.sleep(30)' "$port"
+'''
 FAILING = '#!/bin/sh\necho "ERROR: not authorized" >&2\nexit 1\n'
 
 
@@ -69,7 +78,10 @@ class BackgroundTunnelBase:
         listing = self.run_cli('ps')
         self.assertIn(f'localhost:{self.db}', listing)
         self.assertIn('vm:8080', listing)
-        self.assertIn('Listening on port', self.run_cli('logs', 'web'))
+        logs = self.run_cli('logs', 'web')
+        self.assertIn(f'--local-host-port=localhost:{self.web}', logs)
+        # gcloud's startup check hangs when output is not a terminal
+        self.assertIn('--iap-tunnel-disable-connection-check', logs)
         self.run_cli('down', 'web')
         self.assertFalse((self.state / 'web.pid').exists())
         self.assertNotIn('web', self.run_cli('ps'))
@@ -87,6 +99,36 @@ class BackgroundTunnelBase:
         self.gcloud.write_text(FAILING)
         self.assertIn('not authorized', self.run_cli('up', 'db', ok=False))
         self.assertFalse((self.state / 'db.pid').exists())
+
+    def test_ctrl_c_while_waiting_cancels_without_leftovers(self):
+        self.gcloud.write_text('#!/bin/sh\nexec sleep 30\n')  # never listens
+        proc = subprocess.Popen([*self.command, 'up', 'web'], env=self.env, cwd=self.home,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                start_new_session=True)
+        deadline = time.time() + 10
+        while not (self.state / 'web.pid').exists() and time.time() < deadline:
+            time.sleep(0.1)
+        pid = self.pid('web')
+        time.sleep(0.5)
+        os.killpg(proc.pid, signal.SIGINT)  # what the terminal sends on Ctrl-C
+        out = proc.communicate(timeout=10)[0].decode()
+        self.assertNotEqual(proc.returncode, 0, out)
+        self.assertFalse((self.state / 'web.pid').exists())
+        for _ in range(50):
+            if not self.alive(pid):
+                break
+            time.sleep(0.1)
+        self.assertFalse(self.alive(pid))
+
+    def test_foreground_tunnel_reports_ready_from_port(self):
+        self.gcloud.write_text(LISTENING.replace('time.sleep(30)', 'time.sleep(1)'))
+        out = self.run_cli('web')
+        self.assertIn('--iap-tunnel-disable-connection-check', out)
+        self.assertIn('已連線', out)
+        with socket.socket() as s:
+            s.bind(('127.0.0.1', self.web))
+            s.listen()
+            self.assertIn('已被佔用', self.run_cli('web', ok=False))
 
     def test_path_like_names_are_rejected(self):
         outside = self.home / 'state/victim.pid'

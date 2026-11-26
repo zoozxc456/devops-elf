@@ -249,7 +249,8 @@ function Start-IapTunnel($Entry) {
     $pidFile = Join-Path $stateDir "$name.pid"
     Write-IapPrivateFile $log ''
     $gcloudArgs = @('compute', 'start-iap-tunnel', [string]$Entry.Instance, [string]$Entry.RemotePort,
-                    "--local-host-port=localhost:$($Entry.LocalPort)") + @(Get-IapFlags $Entry)
+                    "--local-host-port=localhost:$($Entry.LocalPort)", '--iap-tunnel-disable-connection-check') + @(Get-IapFlags $Entry)
+    # gcloud 的啟動連線測試在輸出不是終端機時會卡住，所以關掉測試，改用本機 port 判斷就緒。
     # 參數用 JSON 帶進 -EncodedCommand，不經過命令列拼接；斷線 3 秒後自動重連
     $payload = (@{ Log = $log; Args = $gcloudArgs } | ConvertTo-Json -Compress).Replace("'", "''")
     $loop = @"
@@ -266,25 +267,39 @@ while (`$true) {
     $process = if ($IsWindows) {
         Start-Process -FilePath $pwsh -ArgumentList $pwshArgs -WindowStyle Hidden -PassThru
     } else {
-        # nohup：關掉終端機也不會跟著結束
-        Start-Process -FilePath 'nohup' -ArgumentList (@($pwsh) + $pwshArgs) -RedirectStandardOutput '/dev/null' -PassThru
+        # nohup：關掉終端機也不會跟著結束。stdout/stderr 要接走，否則背景行程會握著呼叫端的 pipe，
+        # 讓 `$(iap up ...)` 或測試的 subprocess 一直等到 tunnel 結束。
+        # Start-Process 不允許兩個 redirect 指向同一路徑，所以 stdout 給 log、stderr 給 /dev/null
+        Start-Process -FilePath 'nohup' -ArgumentList (@($pwsh) + $pwshArgs) `
+            -RedirectStandardOutput $log -RedirectStandardError '/dev/null' -PassThru
     }
     Write-IapPrivateFile $pidFile "$($process.Id) $($Entry.LocalPort) $($Entry.RemotePort) $($Entry.Instance)"
     Write-Host "→ [$name] localhost:$($Entry.LocalPort) ⇢ $($Entry.Instance):$($Entry.RemotePort)  背景連線中…"
     $timeout = if ($env:IAP_UP_TIMEOUT) { [int]$env:IAP_UP_TIMEOUT } else { 30 }
     $deadline = (Get-Date).AddSeconds($timeout)
-    while ((Get-Date) -lt $deadline) {
-        $text = Read-IapLog $log
-        if ($text -like '*Listening on port*') {
-            Write-Host "✔ [$name] 已連線（背景 PID $($process.Id)）  localhost:$($Entry.LocalPort) ⇢ $($Entry.Instance):$($Entry.RemotePort)"
-            Show-Endpoints $Entry
-            return $true
+    $ready = $false
+    $finished = $false
+    try {
+        while ((Get-Date) -lt $deadline) {
+            if (Test-IapPortBusy ([int]$Entry.LocalPort)) { $ready = $true; break }
+            if ((Read-IapLog $log) -match '(?m)^\[iap\] tunnel 結束' -or $process.HasExited) { break }
+            Start-Sleep -Milliseconds 200
         }
-        if ($text -match '(?m)^\[iap\] tunnel 結束' -or $process.HasExited) { break }
-        Start-Sleep -Milliseconds 200
+        $finished = $true
+    } finally {
+        # 失敗、逾時或 Ctrl-C 都不留背景行程
+        if (-not $ready) {
+            try { $process.Kill($true) } catch { }
+            Remove-Item -LiteralPath $pidFile -Force -ErrorAction SilentlyContinue
+        }
+        # Ctrl-C 中斷時 pwsh 預設以 0 結束，要明確回報被中斷
+        if (-not $finished) { exit 130 }
     }
-    try { $process.Kill($true) } catch { }
-    Remove-Item -LiteralPath $pidFile -Force -ErrorAction SilentlyContinue
+    if ($ready) {
+        Write-Host "✔ [$name] 已連線（背景 PID $($process.Id)）  localhost:$($Entry.LocalPort) ⇢ $($Entry.Instance):$($Entry.RemotePort)"
+        Show-Endpoints $Entry
+        return $true
+    }
     Write-Host "iap: [$name] tunnel 沒有建立，gcloud 輸出："
     (Read-IapLog $log) -split '\r?\n' | Select-Object -Last 20 | ForEach-Object { Write-Host $_ }
     return $false
@@ -395,12 +410,30 @@ switch -CaseSensitive ($selected.Type) {
             Write-Host '  連線入口（tunnel 建立後可用）：'
             Show-Endpoints $selected
         }
-        & gcloud compute start-iap-tunnel $selected.Instance $selected.RemotePort "--local-host-port=localhost:$($selected.LocalPort)" @flags 2>&1 |
-            ForEach-Object {
-                if ([string]$_ -like '*Listening on port*') {
+        if (Test-IapPortBusy ([int]$selected.LocalPort)) { throw "localhost:$($selected.LocalPort) 已被佔用" }
+        # gcloud 輸出直接給終端機；關掉 gcloud 的啟動連線測試（輸出不是終端機時會卡住），
+        # 改用本機 port 開始接受連線判斷已連線。ArgumentList 逐一加入，不經過命令列拼接。
+        $gcloud = @(Get-Command gcloud -CommandType Application)[0].Source
+        $startInfo = [Diagnostics.ProcessStartInfo]::new($gcloud)
+        foreach ($argument in @('compute', 'start-iap-tunnel', [string]$selected.Instance, [string]$selected.RemotePort,
+                                "--local-host-port=localhost:$($selected.LocalPort)", '--iap-tunnel-disable-connection-check') + $flags) {
+            $startInfo.ArgumentList.Add($argument)
+        }
+        $startInfo.UseShellExecute = $false
+        $process = [Diagnostics.Process]::Start($startInfo)
+        $ready = $false
+        try {
+            # WaitForExit 加逾時，讓 Ctrl-C 能在迴圈之間中斷
+            while (-not $process.WaitForExit(200)) {
+                if (-not $ready -and (Test-IapPortBusy ([int]$selected.LocalPort))) {
+                    $ready = $true
                     Write-Host "✔ [$($selected.Name)] 已連線（Ctrl-C 結束）"
-                } else { Write-Host $_ }
+                }
             }
+        } finally {
+            if (-not $process.HasExited) { try { $process.Kill($true) } catch { } }
+        }
+        exit $process.ExitCode
     }
     default { throw "不支援的連線類型：$($selected.Type)" }
 }
