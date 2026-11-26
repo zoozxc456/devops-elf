@@ -248,9 +248,20 @@ Configuration defaults to a directory outside the source tree. Keep real host se
 
 ## Tab completion
 
+Completes commands (`up`, `ps`, `down`, `logs`, ...) and connection names. Add to `~/.bashrc`:
+
 ```bash
-source ~/.local/bin/.iap/completions/iap.bash   # Add to ~/.bashrc or ~/.zshrc.
+source ~/.local/bin/.iap/completions/iap.bash
 ```
+
+For zsh, add to `~/.zshrc` (zsh needs `bashcompinit` to load the Bash script; `compinit` is enabled if you have not already):
+
+```zsh
+autoload -U compinit bashcompinit && compinit -u && bashcompinit
+source ~/.local/bin/.iap/completions/iap.bash
+```
+
+Open a new terminal or run `source ~/.zshrc` afterward.
 
 ## Troubleshooting
 
