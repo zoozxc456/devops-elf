@@ -24,6 +24,8 @@
 - Bash / PowerShell 安裝改為直接複製 `iap` / `iap.ps1` 到 local bin，不再建立連結或原始碼轉接腳本
 - setup、共用函式與補全同步複製到 bin 下的 `.iap/`，刪除原始碼後仍可使用
 - 支援重複安裝與舊版安裝遷移；`iap update` 依安裝來源更新 Git 或同步本機目錄，並自動更新 bin 中的副本與配套檔案
+### Fixed
+- Tunnel 卡在 `Testing if tunnel connection works.`：gcloud 的啟動連線測試在輸出不是終端機時不會結束，前景與背景模式都改加 `--iap-tunnel-disable-connection-check`，並以本機 port 開始接受連線判斷已連線；本機 port 已被佔用時直接回報
 
 ## [0.4.1] - 2026-10-23
 

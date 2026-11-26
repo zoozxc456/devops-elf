@@ -202,19 +202,25 @@ connect() {
         echo "  連線入口（tunnel 建立後可用）：" >&2
         show_endpoints "$name" "$lport" "$rport" >&2
       fi
-      # 提示先顯示；收到 Listening on port 才顯示已連線。
+      port_busy "$lport" && die "localhost:$lport 已被佔用"
+      # 提示先顯示；本機 port 開始接受連線才顯示已連線。
+      # gcloud 的啟動連線測試在輸出不是終端機時會卡住（這裡輸出被 pipe），所以關掉測試。
+      (
+        for (( i = 0; i < 300; i++ )); do
+          if port_busy "$lport"; then
+            printf '\n✔ [%s] 已連線  localhost:%s  ⇢  %s:%s\n  (Ctrl-C 結束)\n\n' "$name" "$lport" "$instance" "$rport"
+            exit 0
+          fi
+          sleep 0.2
+        done
+      ) &
+      local waiter=$! rc=0
       gcloud compute start-iap-tunnel "$instance" "$rport" \
-          --local-host-port="localhost:$lport" ${flags[@]+"${flags[@]}"} 2>&1 \
-        | while IFS= read -r msg; do
-            if [[ "$msg" == *"Listening on port"* ]]; then
-              echo
-              echo "✔ [$name] 已連線  localhost:$lport  ⇢  $instance:$rport"
-              echo "  (Ctrl-C 結束)"
-              echo
-            else
-              echo "$msg" >&2
-            fi
-          done
+          --local-host-port="localhost:$lport" --iap-tunnel-disable-connection-check \
+          ${flags[@]+"${flags[@]}"} 2>&1 \
+        | while IFS= read -r msg; do echo "$msg" >&2; done || rc=$?
+      kill "$waiter" 2>/dev/null || true
+      return "$rc"
       ;;
     *) die "$name 的 type 不認得：${type}（只支援 ssh / tunnel）" ;;
   esac
@@ -257,7 +263,10 @@ tunnel_up() {
 
   local log="$STATE_DIR/$name.log" pidf="$STATE_DIR/$name.pid"
   (umask 077; mkdir -p "$STATE_DIR"; : >"$log")
-  # 斷線自動重連；gcloud 放背景再 wait，TERM 才能立刻殺掉它
+  # 斷線自動重連；gcloud 放背景再 wait，TERM 才能立刻殺掉它。
+  # gcloud 的啟動連線測試在輸出不是終端機時會卡住，所以關掉測試，改用本機 port 判斷就緒。
+  # set -m：背景行程自成 process group，終端機按 Ctrl-C 不會打到它
+  set -m
   nohup bash -c '
     trap '\''kill "$c" 2>/dev/null; exit 0'\'' TERM
     while :; do
@@ -265,15 +274,19 @@ tunnel_up() {
       echo "[iap] tunnel 結束（exit ${rc}），3 秒後重連…"
       sleep 3 & c=$!; wait "$c"
     done' iap-up gcloud compute start-iap-tunnel "$instance" "$rport" \
-      --local-host-port="localhost:$lport" ${flags[@]+"${flags[@]}"} \
-      >>"$log" 2>&1 </dev/null &
+      --local-host-port="localhost:$lport" --iap-tunnel-disable-connection-check \
+      ${flags[@]+"${flags[@]}"} >>"$log" 2>&1 </dev/null &
   pid=$!
+  set +m
   (umask 077; echo "$pid $lport $rport $instance" >"$pidf")
 
   echo "→ [$name] localhost:$lport  ⇢  $instance:$rport  背景連線中…" >&2
+  # Ctrl-C：取消這條，不留背景行程
+  trap 'kill "$pid" 2>/dev/null; rm -f "$pidf"; echo >&2; echo "iap: [$name] 已取消" >&2; exit 130' INT
   local i timeout=$(( ${IAP_UP_TIMEOUT:-30} * 5 ))
   for (( i = 0; i < timeout; i++ )); do
-    if grep -q 'Listening on port' "$log"; then
+    if port_busy "$lport"; then
+      trap - INT
       echo "✔ [$name] 已連線（背景 PID ${pid}）  localhost:$lport  ⇢  $instance:$rport"
       show_endpoints "$name" "$lport" "$rport"
       return 0
@@ -282,6 +295,7 @@ tunnel_up() {
     kill -0 "$pid" 2>/dev/null || break
     sleep 0.2
   done
+  trap - INT
   kill "$pid" 2>/dev/null || true
   rm -f "$pidf"
   echo "iap: [$name] tunnel 沒有建立，gcloud 輸出：" >&2
